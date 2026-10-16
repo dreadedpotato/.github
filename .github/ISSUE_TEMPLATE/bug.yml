@@ -1,0 +1,43 @@
+name: Bug
+description: "Something that used to work, or should work, is broken."
+title: "[bug]: "
+labels: ["type:bug", "state:triage"]
+body:
+  - type: markdown
+    attributes:
+      value: "Every field is required. The issue stays in state:triage until the check passes."
+  - type: textarea
+    id: for_dread
+    attributes:
+      label: "For Dread"
+      description: "Four lines: Ask (what you want decided or fixed), What changes, Proof (how anyone can see it is fixed), NOT done (what this will not touch)."
+    validations:
+      required: true
+  - type: textarea
+    id: observed
+    attributes:
+      label: "Observed behavior"
+      description: "What happens, where, and when. Steps to see it."
+    validations:
+      required: true
+  - type: textarea
+    id: facts
+    attributes:
+      label: "Facts / cause"
+      description: "What is known and why it happens. Name file paths, and lines where you can. Say how you know."
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: "Acceptance criteria"
+      description: "Numbered list. Each item is checkable by someone who did not write the fix."
+    validations:
+      required: true
+  - type: textarea
+    id: blast_radius
+    attributes:
+      label: "Blast radius"
+      description: "What files, systems or users this touches, and what it does not."
+    validations:
+      required: true
