@@ -11,6 +11,11 @@ body:
     attributes:
       label: "For Dread"
       description: "Four lines: Ask (what you want decided or fixed), What changes, Proof (how anyone can see it is fixed), NOT done (what this will not touch)."
+      value: |
+        - Ask:
+        - What changes:
+        - Proof:
+        - NOT done:
     validations:
       required: true
   - type: textarea
