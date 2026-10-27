@@ -1,0 +1,127 @@
+# Reusable org CI template. Each repo calls it with a short caller workflow.
+# Dread (2026-10-26): CI on every repo; runners clean up after themselves;
+# read values from settings, never hardcode; no machine details in READMEs.
+name: repo-ci
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: Runner label. Callers pass a repo/org variable; default is GitHub-hosted.
+        type: string
+        default: ubuntu-latest
+      timeout-minutes:
+        description: Job timeout.
+        type: number
+        default: 15
+      test-command:
+        description: Optional override for the test command. Empty = auto-detect.
+        type: string
+        default: ""
+      max-file-mb:
+        description: Largest allowed non-LFS file in MB. Callers pass a repo/org variable.
+        type: number
+        default: 10
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  repo-ci:
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Tier line (README has exactly one tier line)
+        shell: bash
+        run: |
+          readme=$(ls README.md README README.markdown readme.md 2>/dev/null | head -n1 || true)
+          if [ -z "$readme" ]; then echo "::error::No README found"; exit 1; fi
+          all=$(grep -c '^Repo tier:' "$readme" || true)
+          ok=$(grep -cE '^Repo tier: (TEST|PROD)[[:space:]]*$' "$readme" || true)
+          if [ "$all" != "1" ] || [ "$ok" != "1" ]; then
+            echo "::error file=$readme::Need exactly one line 'Repo tier: TEST' or 'Repo tier: PROD' (found $all tier lines, $ok valid)"
+            exit 1
+          fi
+          echo "$(grep -E '^Repo tier:' "$readme")"
+
+      - name: PR body (linked issue, Doer and Grader differ)
+        if: github.event_name == 'pull_request'
+        shell: python3 {0}
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          import os, re, sys
+          body = (os.environ.get("PR_BODY") or "").replace("\r", "")
+          errs = []
+          issue = re.search(r"\b(close[sd]?|fix(e[sd])?|resolve[sd]?)\s+#\d+\b", body, re.I) \
+              or re.search(r"https://github\.com/[\w.-]+/[\w.-]+/issues/\d+", body)
+          if not issue:
+              errs.append("PR body must link an issue: 'Closes #<n>', 'Fixes #<n>', or an issue URL")
+          def line(name):
+              m = re.search(rf"^\s*{name}:[ \t]*(\S.*?)\s*$", body, re.I | re.M)
+              v = m.group(1).strip() if m else ""
+              if not v or v.startswith("<"):
+                  errs.append(f"PR body needs a filled-in '{name}:' line")
+              return v.lower()
+          doer, grader = line("Doer"), line("Grader")
+          if doer and grader and doer == grader:
+              errs.append("Doer and Grader must be different seats")
+          for e in errs:
+              print(f"::error::{e}")
+          sys.exit(1 if errs else 0)
+
+      - name: File size (no non-LFS file over the limit)
+        shell: bash
+        env:
+          MAX_MB: ${{ inputs.max-file-mb }}
+        run: |
+          # Checkout runs without LFS, so LFS files are small pointers and pass.
+          limit=$(( MAX_MB * 1024 * 1024 ))
+          bad=0
+          while IFS= read -r -d '' f; do
+            [ -f "$f" ] || continue
+            sz=$(stat -c %s "$f")
+            if [ "$sz" -gt "$limit" ]; then
+              echo "::error file=$f::$f is $(( sz / 1024 / 1024 )) MB, over the ${MAX_MB} MB limit. Use Git LFS or keep it outside git."
+              bad=1
+            fi
+          done < <(git ls-files -z)
+          exit $bad
+
+      - name: Tests (repo's own entry, else skip)
+        shell: bash
+        env:
+          TEST_CMD: ${{ inputs.test-command }}
+        run: |
+          if [ -n "$TEST_CMD" ]; then echo "Running override: $TEST_CMD"; bash -c "$TEST_CMD"; exit $?; fi
+          if [ -f Makefile ] && grep -qE '^test:' Makefile; then
+            make test
+          elif [ -f package.json ] && node -e 'process.exit(require("./package.json").scripts?.test ? 0 : 1)' 2>/dev/null; then
+            if [ -f package-lock.json ]; then npm ci; else npm install --no-audit --no-fund; fi
+            npm test
+          elif [ -f pytest.ini ] || grep -qs '\[tool.pytest' pyproject.toml \
+               || ls tests/test_*.py tests/*_test.py >/dev/null 2>&1; then
+            python3 -m venv "$RUNNER_TEMP/ci-venv"
+            . "$RUNNER_TEMP/ci-venv/bin/activate"
+            python -m pip install -q --upgrade pip pytest
+            [ -f requirements.txt ] && python -m pip install -q -r requirements.txt
+            python -m pytest -q
+          else
+            echo "No standard test entry (make test / npm test / pytest). Skipping tests."
+            echo "### Tests skipped: no standard entry found" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Clean up (self-hosted runners only)
+        if: always() && runner.environment == 'self-hosted'
+        shell: bash
+        run: |
+          rm -rf "${GITHUB_WORKSPACE:?}"/* "${GITHUB_WORKSPACE:?}"/.[!.]* 2>/dev/null || true
+          rm -rf "${RUNNER_TEMP:?}"/* 2>/dev/null || true
