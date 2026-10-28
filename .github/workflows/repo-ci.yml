@@ -14,10 +14,6 @@ on:
         description: Job timeout.
         type: number
         default: 15
-      test-command:
-        description: Optional override for the test command. Empty = auto-detect.
-        type: string
-        default: ""
       no-tests-reason:
         description: Only for repos with no runnable test framework yet. A non-empty reason turns "no tests found" from a failure into a visible warning. Graders check it on every PR.
         type: string
@@ -104,20 +100,9 @@ jobs:
       - name: Tests (repo's own entry; none found is a failure)
         shell: bash
         env:
-          TEST_CMD: ${{ inputs.test-command }}
           NO_TESTS_REASON: ${{ inputs.no-tests-reason }}
         run: |
           set -euo pipefail
-          if [ -n "$TEST_CMD" ]; then
-            trimmed=$(printf '%s' "$TEST_CMD" | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//')
-            if printf '%s' "$trimmed" | grep -qiE '^(true|:|/bin/true|/usr/bin/true|exit( 0)?|echo( .*)?|printf( .*)?)$'; then
-              echo "::error::test-command '$TEST_CMD' cannot fail, so it is not a test. Use the repo's real test command."
-              exit 1
-            fi
-            echo "Running test-command: $TEST_CMD"
-            bash -c "$TEST_CMD"
-            exit $?
-          fi
           has_py_tests() {
             compgen -G 'tests/test_*.py' >/dev/null || compgen -G 'tests/*_test.py' >/dev/null \
               || compgen -G 'test_*.py' >/dev/null || compgen -G 'tests/**/test_*.py' >/dev/null
@@ -139,7 +124,7 @@ jobs:
             echo "::warning::No test entry found. Declared reason: $NO_TESTS_REASON"
             echo "### Tests not run. Declared reason: $NO_TESTS_REASON" >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "::error::No test entry found (make test, npm test, pytest, cargo test). Add tests, or set no-tests-reason in the caller for a repo with no test framework yet."
+            echo "::error::No test entry found (make test, npm test, pytest, cargo test). Add tests (a custom runner goes behind a `make test` target), or set no-tests-reason in the caller for a repo with no test framework yet."
             exit 1
           fi
 
