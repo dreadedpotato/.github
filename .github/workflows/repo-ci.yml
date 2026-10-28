@@ -10,7 +10,7 @@
 #     ci:
 #       uses: dreadedpotato/.github/.github/workflows/repo-ci.yml@<sha>
 #       with:
-#         runner: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+#         runner: ${{ vars.CI_RUNNER_LABEL || 'ubuntu-latest' }}
 #         max-file-mb: ${{ fromJSON(vars.CI_MAX_FILE_MB || '10') }}
 name: repo-ci
 
