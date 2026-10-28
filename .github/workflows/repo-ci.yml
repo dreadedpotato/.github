@@ -18,6 +18,10 @@ on:
         description: Optional override for the test command. Empty = auto-detect.
         type: string
         default: ""
+      no-tests-reason:
+        description: Only for repos with no runnable test framework yet. A non-empty reason turns "no tests found" from a failure into a visible warning. Graders check it on every PR.
+        type: string
+        default: ""
       max-file-mb:
         description: Largest allowed non-LFS file in MB. Callers pass a repo/org variable.
         type: number
@@ -72,7 +76,8 @@ jobs:
                   errs.append(f"PR body needs a filled-in '{name}:' line")
               return v.lower()
           doer, grader = line("Doer"), line("Grader")
-          if doer and grader and doer == grader:
+          first = lambda v: re.split(r"[\s(,/]+", v.strip())[0] if v.strip() else ""
+          if doer and grader and first(doer) == first(grader):
               errs.append("Doer and Grader must be different seats")
           for e in errs:
               print(f"::error::{e}")
@@ -96,27 +101,46 @@ jobs:
           done < <(git ls-files -z)
           exit $bad
 
-      - name: Tests (repo's own entry, else skip)
+      - name: Tests (repo's own entry; none found is a failure)
         shell: bash
         env:
           TEST_CMD: ${{ inputs.test-command }}
+          NO_TESTS_REASON: ${{ inputs.no-tests-reason }}
         run: |
-          if [ -n "$TEST_CMD" ]; then echo "Running override: $TEST_CMD"; bash -c "$TEST_CMD"; exit $?; fi
+          set -euo pipefail
+          if [ -n "$TEST_CMD" ]; then
+            trimmed=$(printf '%s' "$TEST_CMD" | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//')
+            if printf '%s' "$trimmed" | grep -qiE '^(true|:|/bin/true|/usr/bin/true|exit( 0)?|echo( .*)?|printf( .*)?)$'; then
+              echo "::error::test-command '$TEST_CMD' cannot fail, so it is not a test. Use the repo's real test command."
+              exit 1
+            fi
+            echo "Running test-command: $TEST_CMD"
+            bash -c "$TEST_CMD"
+            exit $?
+          fi
+          has_py_tests() {
+            compgen -G 'tests/test_*.py' >/dev/null || compgen -G 'tests/*_test.py' >/dev/null \
+              || compgen -G 'test_*.py' >/dev/null || compgen -G 'tests/**/test_*.py' >/dev/null
+          }
           if [ -f Makefile ] && grep -qE '^test:' Makefile; then
             make test
           elif [ -f package.json ] && node -e 'process.exit(require("./package.json").scripts?.test ? 0 : 1)' 2>/dev/null; then
             if [ -f package-lock.json ]; then npm ci; else npm install --no-audit --no-fund; fi
             npm test
-          elif [ -f pytest.ini ] || grep -qs '\[tool.pytest' pyproject.toml \
-               || ls tests/test_*.py tests/*_test.py >/dev/null 2>&1; then
+          elif [ -f pytest.ini ] || grep -qs '\[tool.pytest' pyproject.toml || has_py_tests; then
             python3 -m venv "$RUNNER_TEMP/ci-venv"
             . "$RUNNER_TEMP/ci-venv/bin/activate"
             python -m pip install -q --upgrade pip pytest
-            [ -f requirements.txt ] && python -m pip install -q -r requirements.txt
-            python -m pytest -q
+            if [ -f requirements.txt ]; then python -m pip install -q -r requirements.txt; fi
+            python -m pytest -q   # exit 5 (no tests collected) fails the job
+          elif [ -f Cargo.toml ]; then
+            cargo test --locked
+          elif [ -n "$NO_TESTS_REASON" ]; then
+            echo "::warning::No test entry found. Declared reason: $NO_TESTS_REASON"
+            echo "### Tests not run. Declared reason: $NO_TESTS_REASON" >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "No standard test entry (make test / npm test / pytest). Skipping tests."
-            echo "### Tests skipped: no standard entry found" >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::No test entry found (make test, npm test, pytest, cargo test). Add tests, or set no-tests-reason in the caller for a repo with no test framework yet."
+            exit 1
           fi
 
       - name: Clean up (self-hosted runners only)
