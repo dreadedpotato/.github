@@ -107,7 +107,7 @@ jobs:
             compgen -G 'tests/test_*.py' >/dev/null || compgen -G 'tests/*_test.py' >/dev/null \
               || compgen -G 'test_*.py' >/dev/null || compgen -G 'tests/**/test_*.py' >/dev/null
           }
-          if [ -f Makefile ] && grep -qE '^test:' Makefile; then
+          if [ -f Makefile ] && grep -qE '^test[[:space:]]*::?' Makefile; then
             make test
           elif [ -f package.json ] && node -e 'process.exit(require("./package.json").scripts?.test ? 0 : 1)' 2>/dev/null; then
             if [ -f package-lock.json ]; then npm ci; else npm install --no-audit --no-fund; fi
@@ -124,7 +124,7 @@ jobs:
             echo "::warning::No test entry found. Declared reason: $NO_TESTS_REASON"
             echo "### Tests not run. Declared reason: $NO_TESTS_REASON" >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "::error::No test entry found (make test, npm test, pytest, cargo test). Add tests (a custom runner goes behind a `make test` target), or set no-tests-reason in the caller for a repo with no test framework yet."
+            echo "::error::No test entry found (make test, npm test, pytest, cargo test). Add tests (a custom runner goes behind a make test target), or set no-tests-reason in the caller for a repo with no test framework yet."
             exit 1
           fi
 
