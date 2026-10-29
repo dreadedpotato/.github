@@ -33,10 +33,17 @@ on:
         description: Largest allowed non-LFS file in MB. Callers pass a repo/org variable.
         type: number
         default: 10
+      allowed-email:
+        description: Author and committer email allowed on pull request commits. Callers can pass an org/repo variable.
+        type: string
+        default: "5559848+DreadfullyDespized@users.noreply.github.com"
+      allowed-seats:
+        description: "Seats allowed in Doer: and Grader: lines, newline- or comma-separated. Callers can pass an org/repo variable."
+        type: string
+        default: "Rei (Stream seat), Priya (Shard seat), Odile Sorel (Chief of Staff)"
 
 permissions:
   contents: read
-  pull-requests: read
 
 jobs:
   repo-ci:
@@ -44,10 +51,10 @@ jobs:
     timeout-minutes: ${{ inputs.timeout-minutes }}
     permissions:
       contents: read
-      pull-requests: read
     steps:
       - uses: actions/checkout@v4
         with:
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Tier line (README has exactly one tier line)
@@ -63,34 +70,136 @@ jobs:
           fi
           echo "$(grep -E '^Repo tier:' "$readme")"
 
-      - name: PR body (linked issue, exactly one Doer and one Grader, different seats)
-        if: github.event_name == 'pull_request'
+      - name: "PR identity (linked issue; body and every commit: one Doer, one Grader, different seats; allowed commit email)"
         shell: python3 {0}
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          ALLOWED_EMAIL: ${{ inputs.allowed-email }}
+          EVENT_NAME: ${{ github.event_name }}
+          ALLOWED_SEATS: ${{ inputs.allowed-seats }}
         run: |
-          import os, re, sys
+          import os, re, subprocess, sys, unicodedata
+          event = (os.environ.get("EVENT_NAME") or "").strip()
+          if not event:
+              print("::error::EVENT_NAME is empty")
+              sys.exit(1)
+          if event not in ("pull_request", "pull_request_target"):
+              notice = f"PR identity check not applicable to event '{event}' (runs on pull_request and pull_request_target)"
+              print(f"::notice::{notice}")
+              summary = os.environ.get("GITHUB_STEP_SUMMARY")
+              if summary:
+                  with open(summary, "a", encoding="utf-8") as handle:
+                      handle.write(notice + "\n")
+              sys.exit(0)
           body = (os.environ.get("PR_BODY") or "").replace("\r", "")
+          body = re.sub(r"<!--.*?(?:-->|\Z)", "", body, flags=re.S)
+          base = (os.environ.get("BASE_SHA") or "").strip()
+          head = (os.environ.get("HEAD_SHA") or "").strip()
+          allowed = (os.environ.get("ALLOWED_EMAIL") or "").strip()
+          seat_text = os.environ.get("ALLOWED_SEATS") or ""
           errs = []
-          issue = re.search(r"\b(close[sd]?|fix(e[sd])?|resolve[sd]?)\s+#\d+\b", body, re.I) \
-              or re.search(r"https://github\.com/[\w.-]+/[\w.-]+/issues/\d+", body)
+          def norm(s):
+              s = unicodedata.normalize("NFKC", s)
+              s = "".join(ch for ch in s if unicodedata.category(ch) != "Cf")
+              s = re.sub(r"\s+", " ", s).strip().casefold()
+              return s
+          allowed_seats = set()
+          for line in seat_text.splitlines():
+              for part in line.split(","):
+                  item = norm(part)
+                  if item:
+                      allowed_seats.add(item)
+          def git_out(args):
+              try:
+                  proc = subprocess.run(["git", *args], capture_output=True, text=True)
+              except OSError as exc:
+                  return None, str(exc)
+              if proc.returncode != 0:
+                  detail = (proc.stderr or proc.stdout or "").strip()
+                  return None, detail
+              return proc.stdout, ""
+          def check_roles(text, label):
+              def note(msg):
+                  errs.append(f"{label} {msg}" if label else msg)
+              text = text.replace("\r", "")
+              accepted = {}
+              for name in ("Doer", "Grader"):
+                  ms = re.findall(rf"^[ \t]*{name}[ \t]*:[ \t]*(.*?)[ \t]*$", text, re.I | re.M)
+                  if len(ms) > 1:
+                      note(f"must have exactly one '{name}:' line (found {len(ms)})")
+                  elif len(ms) == 0 or not ms[0].strip():
+                      note(f"needs a filled-in '{name}:' line")
+                  else:
+                      value = ms[0].strip()
+                      if norm(value) not in allowed_seats:
+                          note(f"'{name}:' value {value!r} is not an allowed seat")
+                      else:
+                          accepted[name] = value
+              if "Doer" in accepted and "Grader" in accepted and norm(accepted["Doer"]) == norm(accepted["Grader"]):
+                  note("Doer and Grader name the same seat")
+          if not allowed_seats:
+              errs.append("ALLOWED_SEATS is empty")
+          if not allowed:
+              errs.append("ALLOWED_EMAIL is empty")
+          if not body.strip():
+              errs.append("PR body is empty")
+          issue = re.search(r"\b(close[sd]?|fix(e[sd])?|resolve[sd]?)\s+#\d+\b", body, re.I) or re.search(
+              r"https://github\.com/[\w.-]+/[\w.-]+/issues/\d+", body
+          )
           if not issue:
               errs.append("PR body must link an issue: 'Closes #<n>', 'Fixes #<n>', or an issue URL")
-          def line(name):
-              ms = re.findall(rf"^\s*{name}:[ \t]*(.*?)\s*$", body, re.I | re.M)
-              if len(ms) > 1:
-                  errs.append(f"PR body must have exactly one '{name}:' line (found {len(ms)})")
-              v = ms[0].strip() if ms else ""
-              if not v or v.startswith("<"):
-                  errs.append(f"PR body needs a filled-in '{name}:' line")
-              return v.lower()
-          doer, grader = line("Doer"), line("Grader")
-          first = lambda v: re.split(r"[\s(,/]+", v.strip())[0] if v.strip() else ""
-          if doer and grader and first(doer) == first(grader):
-              errs.append("Doer and Grader must be different seats")
+          check_roles(body, "PR body")
+          if not base or not head:
+              errs.append("BASE_SHA and HEAD_SHA are required")
+          else:
+              if event == "pull_request_target":
+                  probe = subprocess.run(
+                      ["git", "cat-file", "-e", head + "^{commit}"],
+                      capture_output=True,
+                      text=True,
+                  )
+                  if probe.returncode != 0:
+                      fetch_env = os.environ.copy()
+                      fetch_env["GIT_TERMINAL_PROMPT"] = "0"
+                      subprocess.run(
+                          ["git", "fetch", "--no-tags", "origin", head],
+                          capture_output=True,
+                          text=True,
+                          env=fetch_env,
+                      )
+              listed, gerr = git_out(["rev-list", "--reverse", f"{base}..{head}"])
+              if listed is None:
+                  errs.append(f"git rev-list {base}..{head} failed: {gerr}")
+              else:
+                  shas = [line.strip() for line in listed.splitlines() if line.strip()]
+                  if not shas:
+                      errs.append("PR range contains zero commits")
+                  for sha in shas:
+                      short = sha[:7]
+                      raw, gerr = git_out(["log", "-1", "--format=%ae%x00%ce%x00%B", sha])
+                      if raw is None:
+                          errs.append(f"{short}: git log failed: {gerr}")
+                      else:
+                          parts = raw.split("\0", 2)
+                          if len(parts) != 3:
+                              errs.append(f"{short}: commit record is incomplete")
+                          else:
+                              author = parts[0].strip()
+                              committer = parts[1].strip()
+                              message = parts[2]
+                              if author.lower() != allowed.lower():
+                                  errs.append(f"{short}: author email {author!r} is not the allowed email {allowed!r}")
+                              if committer.lower() != allowed.lower():
+                                  errs.append(f"{short}: committer email {committer!r} is not the allowed email {allowed!r}")
+                              check_roles(message, f"commit {short}")
           for e in errs:
               print(f"::error::{e}")
-          sys.exit(1 if errs else 0)
+          if errs:
+              sys.exit(1)
+          print("PR identity ok")
+          sys.exit(0)
 
       - name: File size (no non-LFS file over the limit)
         shell: bash
@@ -129,9 +238,9 @@ jobs:
           elif [ -f pytest.ini ] || grep -qs '\[tool.pytest' pyproject.toml || has_py_tests; then
             python3 -m venv "$RUNNER_TEMP/ci-venv"
             . "$RUNNER_TEMP/ci-venv/bin/activate"
-            python -m pip install -q --upgrade pip pytest
+            python -m pip install -q pip==26.2.2 pytest==9.2.0
             if [ -f requirements.txt ]; then python -m pip install -q -r requirements.txt; fi
-            python -m pytest -q   # exit 5 (no tests collected) fails the job
+            python -m pytest -q
           elif [ -f Cargo.toml ]; then
             cargo test --locked
           elif [ -n "$NO_TESTS_REASON" ]; then
