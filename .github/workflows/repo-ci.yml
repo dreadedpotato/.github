@@ -33,6 +33,10 @@ on:
         description: Largest allowed non-LFS file in MB. Callers pass a repo/org variable.
         type: number
         default: 10
+      allowed-email:
+        description: Author and committer email allowed on pull request commits. Callers can pass an org/repo variable.
+        type: string
+        default: "5559848+DreadfullyDespized@users.noreply.github.com"
 
 permissions:
   contents: read
@@ -48,6 +52,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Tier line (README has exactly one tier line)
@@ -63,34 +68,95 @@ jobs:
           fi
           echo "$(grep -E '^Repo tier:' "$readme")"
 
-      - name: PR body (linked issue, exactly one Doer and one Grader, different seats)
+      - name: "PR identity (linked issue; body and every commit: one Doer, one Grader, different seats; allowed commit email)"
         if: github.event_name == 'pull_request'
         shell: python3 {0}
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          ALLOWED_EMAIL: ${{ inputs.allowed-email }}
         run: |
-          import os, re, sys
+          import os, re, subprocess, sys
           body = (os.environ.get("PR_BODY") or "").replace("\r", "")
+          base = (os.environ.get("BASE_SHA") or "").strip()
+          head = (os.environ.get("HEAD_SHA") or "").strip()
+          allowed = (os.environ.get("ALLOWED_EMAIL") or "").strip()
           errs = []
-          issue = re.search(r"\b(close[sd]?|fix(e[sd])?|resolve[sd]?)\s+#\d+\b", body, re.I) \
-              or re.search(r"https://github\.com/[\w.-]+/[\w.-]+/issues/\d+", body)
+          def git_out(args):
+              try:
+                  proc = subprocess.run(["git", *args], capture_output=True, text=True)
+              except OSError as exc:
+                  return None, str(exc)
+              if proc.returncode != 0:
+                  detail = (proc.stderr or proc.stdout or "").strip()
+                  return None, detail
+              return proc.stdout, ""
+          def check_roles(text, label):
+              def note(msg):
+                  errs.append(f"{label} {msg}" if label else msg)
+              def first(v):
+                  return re.split(r"[\s(,/]+", v.strip())[0] if v.strip() else ""
+              text = text.replace("\r", "")
+              vals = {}
+              for name in ("Doer", "Grader"):
+                  ms = re.findall(rf"^\s*{name}:[ \t]*(.*?)\s*$", text, re.I | re.M)
+                  if len(ms) > 1:
+                      note(f"must have exactly one '{name}:' line (found {len(ms)})")
+                  v = ms[0].strip() if ms else ""
+                  if not v or v.startswith("<"):
+                      note(f"needs a filled-in '{name}:' line")
+                  vals[name] = v
+              doer = vals["Doer"].strip().lower()
+              grader = vals["Grader"].strip().lower()
+              if doer and grader and doer == grader:
+                  note("Doer and Grader name the same seat")
+              if doer and grader and first(doer) == first(grader):
+                  note("Doer and Grader must be different seats")
+          if not allowed:
+              errs.append("ALLOWED_EMAIL is empty")
+          if not body.strip():
+              errs.append("PR body is empty")
+          issue = re.search(r"\b(close[sd]?|fix(e[sd])?|resolve[sd]?)\s+#\d+\b", body, re.I) or re.search(
+              r"https://github\.com/[\w.-]+/[\w.-]+/issues/\d+", body
+          )
           if not issue:
               errs.append("PR body must link an issue: 'Closes #<n>', 'Fixes #<n>', or an issue URL")
-          def line(name):
-              ms = re.findall(rf"^\s*{name}:[ \t]*(.*?)\s*$", body, re.I | re.M)
-              if len(ms) > 1:
-                  errs.append(f"PR body must have exactly one '{name}:' line (found {len(ms)})")
-              v = ms[0].strip() if ms else ""
-              if not v or v.startswith("<"):
-                  errs.append(f"PR body needs a filled-in '{name}:' line")
-              return v.lower()
-          doer, grader = line("Doer"), line("Grader")
-          first = lambda v: re.split(r"[\s(,/]+", v.strip())[0] if v.strip() else ""
-          if doer and grader and first(doer) == first(grader):
-              errs.append("Doer and Grader must be different seats")
+          check_roles(body, "PR body")
+          if not base or not head:
+              errs.append("BASE_SHA and HEAD_SHA are required")
+          else:
+              listed, gerr = git_out(["rev-list", "--reverse", f"{base}..{head}"])
+              if listed is None:
+                  errs.append(f"git rev-list {base}..{head} failed: {gerr}")
+              else:
+                  shas = [line.strip() for line in listed.splitlines() if line.strip()]
+                  if not shas:
+                      errs.append("PR range contains zero commits")
+                  for sha in shas:
+                      short = sha[:7]
+                      raw, gerr = git_out(["log", "-1", "--format=%ae%x00%ce%x00%B", sha])
+                      if raw is None:
+                          errs.append(f"{short}: git log failed: {gerr}")
+                      else:
+                          parts = raw.split("\0", 2)
+                          if len(parts) != 3:
+                              errs.append(f"{short}: commit record is incomplete")
+                          else:
+                              author = parts[0].strip()
+                              committer = parts[1].strip()
+                              message = parts[2]
+                              if author.lower() != allowed.lower():
+                                  errs.append(f"{short}: author email {author!r} is not the allowed email {allowed!r}")
+                              if committer.lower() != allowed.lower():
+                                  errs.append(f"{short}: committer email {committer!r} is not the allowed email {allowed!r}")
+                              check_roles(message, f"commit {short}")
           for e in errs:
               print(f"::error::{e}")
-          sys.exit(1 if errs else 0)
+          if errs:
+              sys.exit(1)
+          print("PR identity ok")
+          sys.exit(0)
 
       - name: File size (no non-LFS file over the limit)
         shell: bash
