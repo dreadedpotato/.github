@@ -7,15 +7,9 @@ body:
     attributes:
       value: "Every field is required. The issue stays in state:triage until the check passes."
   - type: textarea
-    id: for_dread
+    id: dread_ask
     attributes:
-      label: "For Dread"
-      description: "Four lines: Ask (what you want decided or fixed), What changes, Proof (how anyone can see it is fixed), NOT done (what this will not touch)."
-      value: |
-        - Ask:
-        - What changes:
-        - Proof:
-        - NOT done:
+      label: "Dread's ask, quoted word for word with its date"
     validations:
       required: true
   - type: textarea
