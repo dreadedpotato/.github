@@ -34,13 +34,13 @@ on:
         type: number
         default: 10
       allowed-email:
-        description: Author and committer email allowed on pull request commits. Callers can pass an org/repo variable.
+        description: Author and committer email allowed on pull request commits. An empty value falls back to the CI_ALLOWED_EMAIL repo or org variable.
         type: string
-        default: "5559848+DreadfullyDespized@users.noreply.github.com"
+        default: ""
       allowed-seats:
-        description: "Seats allowed in Doer: and Grader: lines, newline- or comma-separated. Callers can pass an org/repo variable."
+        description: "Seats allowed in Doer: and Grader: lines, newline- or comma-separated. An empty value falls back to the CI_ALLOWED_SEATS repo or org variable."
         type: string
-        default: "Rei (Stream seat), Priya (Shard seat), Odile Sorel (Chief of Staff)"
+        default: ""
 
 permissions:
   contents: read
@@ -76,9 +76,9 @@ jobs:
           PR_BODY: ${{ github.event.pull_request.body }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          ALLOWED_EMAIL: ${{ inputs.allowed-email }}
+          ALLOWED_EMAIL: ${{ inputs.allowed-email || vars.CI_ALLOWED_EMAIL }}
           EVENT_NAME: ${{ github.event_name }}
-          ALLOWED_SEATS: ${{ inputs.allowed-seats }}
+          ALLOWED_SEATS: ${{ inputs.allowed-seats || vars.CI_ALLOWED_SEATS }}
         run: |
           import os, re, subprocess, sys, unicodedata
           event = (os.environ.get("EVENT_NAME") or "").strip()

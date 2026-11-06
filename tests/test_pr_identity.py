@@ -30,11 +30,14 @@ def step_run():
     trigger = data.get("on", data.get(True))
     email_input = trigger["workflow_call"]["inputs"]["allowed-email"]
     assert email_input["type"] == "string"
-    assert "org/repo variable" in email_input["description"]
-    assert isinstance(email_input["default"], str) and email_input["default"].strip()
+    assert "CI_ALLOWED_EMAIL" in email_input["description"]
+    assert "variable" in email_input["description"]
+    assert email_input["default"] == ""
     seats_input = trigger["workflow_call"]["inputs"]["allowed-seats"]
     assert seats_input["type"] == "string"
-    assert isinstance(seats_input["default"], str) and seats_input["default"].strip()
+    assert "CI_ALLOWED_SEATS" in seats_input["description"]
+    assert "variable" in seats_input["description"]
+    assert seats_input["default"] == ""
     for block in (data["permissions"], data["jobs"]["repo-ci"]["permissions"]):
         assert "pull-requests" not in block
     matches = [step for step in steps if step.get("name") == STEP_NAME]
@@ -45,9 +48,9 @@ def step_run():
     assert step["env"]["PR_BODY"] == "${{ github.event.pull_request.body }}"
     assert step["env"]["BASE_SHA"] == "${{ github.event.pull_request.base.sha }}"
     assert step["env"]["HEAD_SHA"] == "${{ github.event.pull_request.head.sha }}"
-    assert step["env"]["ALLOWED_EMAIL"] == "${{ inputs.allowed-email }}"
+    assert step["env"]["ALLOWED_EMAIL"] == "${{ inputs.allowed-email || vars.CI_ALLOWED_EMAIL }}"
     assert step["env"]["EVENT_NAME"] == "${{ github.event_name }}"
-    assert step["env"]["ALLOWED_SEATS"] == "${{ inputs.allowed-seats }}"
+    assert step["env"]["ALLOWED_SEATS"] == "${{ inputs.allowed-seats || vars.CI_ALLOWED_SEATS }}"
     assert "continue-on-error" not in step
     return step["run"]
 
@@ -343,11 +346,9 @@ def test_missing_commit_sha_fails(tmp_path, step_run):
     assert missing in proc.stdout
 
 
-def test_yml_default_seats_accept_rei_and_priya(tmp_path, step_run):
-    data = yaml.safe_load((ROOT / ".github" / "workflows" / "repo-ci.yml").read_text())
-    trigger = data.get("on", data.get(True))
-    seats = trigger["workflow_call"]["inputs"]["allowed-seats"]["default"]
-    roles = "Doer: Rei (Stream seat)\nGrader: Priya (Shard seat)\n"
+def test_four_seat_comma_list_accepts_qa_grader(tmp_path, step_run):
+    seats = "Alpha (seat one), Bravo (seat two), Charlie (seat three), Delta (QA seat)"
+    roles = "Doer: Alpha (seat one)\nGrader: Delta (QA seat)\n"
     proc, _head = run_identity(
         tmp_path,
         step_run,
@@ -359,6 +360,13 @@ def test_yml_default_seats_accept_rei_and_priya(tmp_path, step_run):
     assert proc.returncode == 0, blob
     assert "PR identity ok" in proc.stdout
     assert "::error::" not in proc.stdout
+
+
+def test_repo_ci_yml_has_no_hardcoded_identity():
+    text = (ROOT / ".github" / "workflows" / "repo-ci.yml").read_text()
+    assert "@users.noreply.github.com" not in text
+    for banned in ("(Stream seat)", "(Shard seat)", "(Chief of Staff)"):
+        assert banned not in text
 
 
 @pytest.mark.parametrize(

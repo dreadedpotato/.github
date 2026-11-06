@@ -9,5 +9,5 @@ Every commit in the PR range and the PR body need exactly one Doer: line and one
 
 Every commit author and committer email must equal allowed-email, so the check rejects commits made in the GitHub web editor, "Update branch" merge commits, and bot commits, because they carry other emails and no Doer/Grader trailers.
 
-The check runs on pull_request and pull_request_target, and posts a notice and skips on other events like push. Callers override `allowed-email` and `allowed-seats` through `with:` inputs, for example from repo or org variables like `${{ vars.CI_ALLOWED_SEATS }}`.
+The check runs on pull_request and pull_request_target, and posts a notice and skips on other events like push. `allowed-email` and `allowed-seats` read `vars.CI_ALLOWED_EMAIL` and `vars.CI_ALLOWED_SEATS` from the caller repository or organization settings by default. `with:` inputs still override, and the check fails closed when both are empty.
 
