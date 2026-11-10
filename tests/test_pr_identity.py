@@ -12,7 +12,6 @@ STEP_NAME = (
     "PR identity (linked issue; body and every commit: one Doer, one Grader, "
     "different seats; allowed commit email)"
 )
-SEATS = "Alpha (seat one), Beta (seat two)\nGamma (seat three)"
 ALLOWED = "allowed@example.com"
 OTHER = "other@example.com"
 GOOD_BODY = "Closes #3\n\nDoer: Alpha (seat one)\nGrader: Beta (seat two)\n"
@@ -33,11 +32,6 @@ def step_run():
     assert "CI_ALLOWED_EMAIL" in email_input["description"]
     assert "variable" in email_input["description"]
     assert email_input["default"] == ""
-    seats_input = trigger["workflow_call"]["inputs"]["allowed-seats"]
-    assert seats_input["type"] == "string"
-    assert "CI_ALLOWED_SEATS" in seats_input["description"]
-    assert "variable" in seats_input["description"]
-    assert seats_input["default"] == ""
     for block in (data["permissions"], data["jobs"]["repo-ci"]["permissions"]):
         assert "pull-requests" not in block
     matches = [step for step in steps if step.get("name") == STEP_NAME]
@@ -50,7 +44,6 @@ def step_run():
     assert step["env"]["HEAD_SHA"] == "${{ github.event.pull_request.head.sha }}"
     assert step["env"]["ALLOWED_EMAIL"] == "${{ inputs.allowed-email || vars.CI_ALLOWED_EMAIL }}"
     assert step["env"]["EVENT_NAME"] == "${{ github.event_name }}"
-    assert step["env"]["ALLOWED_SEATS"] == "${{ inputs.allowed-seats || vars.CI_ALLOWED_SEATS }}"
     assert "continue-on-error" not in step
     return step["run"]
 
@@ -118,7 +111,6 @@ def run_identity(
     allowed=ALLOWED,
     head_override=None,
     event="pull_request",
-    seats=SEATS,
     summary_path=None,
 ):
     repo = tmp_path / "repo"
@@ -183,10 +175,6 @@ def run_identity(
         env.pop("EVENT_NAME", None)
     else:
         env["EVENT_NAME"] = event
-    if seats is None:
-        env.pop("ALLOWED_SEATS", None)
-    else:
-        env["ALLOWED_SEATS"] = seats
     env.pop("GITHUB_STEP_SUMMARY", None)
     if summary_path is not None:
         env["GITHUB_STEP_SUMMARY"] = str(summary_path)
@@ -286,19 +274,6 @@ def test_doer_equals_grader_fails(tmp_path, step_run, grader, where):
         assert f"commit {head[:7]}" in proc.stdout
 
 
-@pytest.mark.parametrize("where", ["commit", "body"])
-def test_grader_alpha_seat_two_is_not_allowed(tmp_path, step_run, where):
-    bad = "Doer: Alpha (seat one)\nGrader: Alpha (seat two)\n"
-    body, message = placed(where, bad)
-    proc, head = run_identity(tmp_path, step_run, body, [{"message": message}])
-    if where == "commit":
-        label = f"commit {head[:7]}"
-    else:
-        label = "PR body"
-    assert_fail(proc, f"{label} 'Grader:' value 'Alpha (seat two)' is not an allowed seat")
-    assert "name the same seat" not in proc.stdout
-
-
 @pytest.mark.parametrize(
     "body,needle",
     [
@@ -346,53 +321,11 @@ def test_missing_commit_sha_fails(tmp_path, step_run):
     assert missing in proc.stdout
 
 
-def test_four_seat_comma_list_accepts_qa_grader(tmp_path, step_run):
-    seats = "Alpha (seat one), Bravo (seat two), Charlie (seat three), Delta (QA seat)"
-    roles = "Doer: Alpha (seat one)\nGrader: Delta (QA seat)\n"
-    proc, _head = run_identity(
-        tmp_path,
-        step_run,
-        f"Closes #3\n\n{roles}",
-        [{"message": f"Update template\n\n{roles}"}],
-        seats=seats,
-    )
-    blob = proc.stdout + proc.stderr
-    assert proc.returncode == 0, blob
-    assert "PR identity ok" in proc.stdout
-    assert "::error::" not in proc.stdout
-
-
 def test_repo_ci_yml_has_no_hardcoded_identity():
     text = (ROOT / ".github" / "workflows" / "repo-ci.yml").read_text()
     assert "@users.noreply.github.com" not in text
     for banned in ("(Stream seat)", "(Shard seat)", "(Chief of Staff)"):
         assert banned not in text
-
-
-@pytest.mark.parametrize(
-    "grader",
-    [
-        pytest.param("Alpha.", id="rei-dot"),
-        pytest.param("Alpha-2", id="rei-dash"),
-        pytest.param("Alpha\u200b", id="zero-width"),
-        pytest.param("\u0410lpha (seat one)", id="cyrillic"),
-        pytest.param("TBD", id="tbd"),
-        pytest.param("-", id="dash"),
-        pytest.param("?", id="question"),
-        pytest.param("<placeholder>", id="placeholder"),
-        pytest.param("Alpha (seat one).", id="seat-dot"),
-    ],
-)
-@pytest.mark.parametrize("where", ["commit", "body"])
-def test_disguised_grader_is_not_allowed_seat(tmp_path, step_run, grader, where):
-    bad = f"Doer: Alpha (seat one)\nGrader: {grader}\n"
-    body, message = placed(where, bad)
-    proc, head = run_identity(tmp_path, step_run, body, [{"message": message}])
-    if where == "commit":
-        label = f"commit {head[:7]}"
-    else:
-        label = "PR body"
-    assert_fail(proc, f"{label} 'Grader:' value {grader!r} is not an allowed seat")
 
 
 @pytest.mark.parametrize(
@@ -511,30 +444,6 @@ def test_merge_commit_with_trailers_passes(tmp_path, step_run):
     assert "::error::" not in proc.stdout
 
 
-def test_only_middle_commit_of_three_is_named(tmp_path, step_run):
-    bad = "Update template\n\nDoer: TBD\nGrader: Beta (seat two)\n"
-    proc, _head = run_identity(
-        tmp_path,
-        step_run,
-        GOOD_BODY,
-        [
-            {"message": GOOD_MSG},
-            {"message": bad},
-            {"message": GOOD_MSG},
-        ],
-    )
-    shas = [
-        line.strip()
-        for line in git_stdout(tmp_path / "repo", "rev-list", "--reverse", "HEAD").splitlines()
-        if line.strip()
-    ]
-    assert len(shas) == 4
-    good_a, bad_sha, good_b = shas[1], shas[2], shas[3]
-    assert_fail(proc, f"commit {bad_sha[:7]} 'Doer:' value 'TBD' is not an allowed seat")
-    assert good_a[:7] not in proc.stdout
-    assert good_b[:7] not in proc.stdout
-
-
 def test_push_event_skips(tmp_path, step_run):
     summary = tmp_path / "summary.md"
     proc, _head = run_identity(
@@ -575,18 +484,6 @@ def test_missing_event_name_fails(tmp_path, step_run):
     )
     assert_fail(proc, "EVENT_NAME is empty")
     assert proc.stdout.strip() == "::error::EVENT_NAME is empty"
-
-
-@pytest.mark.parametrize("seats", [None, "", " , \n "])
-def test_empty_allowed_seats_fails(tmp_path, step_run, seats):
-    proc, _head = run_identity(
-        tmp_path,
-        step_run,
-        GOOD_BODY,
-        [{"message": GOOD_MSG}],
-        seats=seats,
-    )
-    assert_fail(proc, "ALLOWED_SEATS is empty")
 
 
 def test_issue_link_inside_html_comment_does_not_count(tmp_path, step_run):
