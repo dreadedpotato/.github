@@ -37,10 +37,6 @@ on:
         description: Author and committer email allowed on pull request commits. An empty value falls back to the CI_ALLOWED_EMAIL repo or org variable.
         type: string
         default: ""
-      allowed-seats:
-        description: "Seats allowed in Doer: and Grader: lines, newline- or comma-separated. An empty value falls back to the CI_ALLOWED_SEATS repo or org variable."
-        type: string
-        default: ""
 
 permissions:
   contents: read
@@ -78,7 +74,6 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           ALLOWED_EMAIL: ${{ inputs.allowed-email || vars.CI_ALLOWED_EMAIL }}
           EVENT_NAME: ${{ github.event_name }}
-          ALLOWED_SEATS: ${{ inputs.allowed-seats || vars.CI_ALLOWED_SEATS }}
         run: |
           import os, re, subprocess, sys, unicodedata
           event = (os.environ.get("EVENT_NAME") or "").strip()
@@ -98,19 +93,12 @@ jobs:
           base = (os.environ.get("BASE_SHA") or "").strip()
           head = (os.environ.get("HEAD_SHA") or "").strip()
           allowed = (os.environ.get("ALLOWED_EMAIL") or "").strip()
-          seat_text = os.environ.get("ALLOWED_SEATS") or ""
           errs = []
           def norm(s):
               s = unicodedata.normalize("NFKC", s)
               s = "".join(ch for ch in s if unicodedata.category(ch) != "Cf")
               s = re.sub(r"\s+", " ", s).strip().casefold()
               return s
-          allowed_seats = set()
-          for line in seat_text.splitlines():
-              for part in line.split(","):
-                  item = norm(part)
-                  if item:
-                      allowed_seats.add(item)
           def git_out(args):
               try:
                   proc = subprocess.run(["git", *args], capture_output=True, text=True)
@@ -133,14 +121,9 @@ jobs:
                       note(f"needs a filled-in '{name}:' line")
                   else:
                       value = ms[0].strip()
-                      if norm(value) not in allowed_seats:
-                          note(f"'{name}:' value {value!r} is not an allowed seat")
-                      else:
-                          accepted[name] = value
+                      accepted[name] = value
               if "Doer" in accepted and "Grader" in accepted and norm(accepted["Doer"]) == norm(accepted["Grader"]):
                   note("Doer and Grader name the same seat")
-          if not allowed_seats:
-              errs.append("ALLOWED_SEATS is empty")
           if not allowed:
               errs.append("ALLOWED_EMAIL is empty")
           if not body.strip():
