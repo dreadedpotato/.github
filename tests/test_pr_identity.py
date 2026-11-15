@@ -185,7 +185,7 @@ def run_identity(
     if head_readme is not None:
         (repo / readme_name).write_text(head_readme)
         git(repo, "add", readme_name)
-        git(repo, "commit", "-m", "head readme")
+        git(repo, "commit", "-m", GOOD_MSG)
     head = head_override if head_override is not None else head_sha(repo)
     path = tmp_path / "pr_identity_step.py"
     path.write_text(script)
