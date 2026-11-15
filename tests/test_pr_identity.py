@@ -630,10 +630,10 @@ def test_missing_or_empty_tested_fails(tmp_path, step_run, tested_line):
     [
         ("Lyska", "Hester"),
         ("hester quill", "Sidony"),
-        ("Sidony Quire", "Oralie"),
+        ("Sidony Quire", "Hester Quill"),
         ("calla", "Calla Wrenfield"),
         ("Ines", "ines varro"),
-        ("Oralie", "Lyska"),
+        ("Ines Varro", "Lyska"),
         ("Calla Wrenfield", "Ines Varro"),
         ("Hester", "Ines"),
         ("Sidony", "Calla"),
