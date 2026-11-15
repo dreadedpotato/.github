@@ -1,5 +1,3 @@
-"""Execute the repo-ci pull request identity step from the workflow file."""
-
 import os
 import subprocess
 from pathlib import Path
@@ -14,8 +12,23 @@ STEP_NAME = (
 )
 ALLOWED = "allowed@example.com"
 OTHER = "other@example.com"
-GOOD_BODY = "Closes #3\n\nDoer: Alpha (seat one)\nGrader: Beta (seat two)\n"
-GOOD_MSG = "Update template\n\nDoer: Alpha (seat one)\nGrader: Beta (seat two)\n"
+SAME_PR = (
+    "Fix it on this same PR: edit the PR body or push the fix to this branch. "
+    "Do not close and reopen a copy. Do not rerun CI without a change."
+)
+GOOD_BODY = (
+    "For Dread: identity check\n"
+    "Closes #3\n"
+    "\n"
+    "Doer: Lyska\n"
+    "Grader: Hester Quill\n"
+    "\n"
+    "Problem: body rules\n"
+    "Fix: enforce them\n"
+    "Tested: pytest passed\n"
+    "Not checked / Risk: none\n"
+)
+GOOD_MSG = "Update template\n\nDoer: Lyska\nGrader: Hester Quill\n"
 
 
 @pytest.fixture(scope="module")
@@ -97,10 +110,10 @@ def head_sha(repo):
 
 
 def placed(where, bad):
-    good = "Doer: Alpha (seat one)\nGrader: Beta (seat two)\n"
     if where == "commit":
-        return f"Closes #3\n\n{good}", f"Update template\n\n{bad}"
-    return f"Closes #3\n\n{bad}", f"Update template\n\n{good}"
+        return GOOD_BODY, f"Update template\n\n{bad}"
+    body = GOOD_BODY.replace("Doer: Lyska\nGrader: Hester Quill\n", bad)
+    return body, GOOD_MSG
 
 
 def run_identity(
@@ -194,6 +207,10 @@ def assert_fail(proc, needle):
     assert "::error::" in proc.stdout, blob
     assert needle in proc.stdout, blob
     assert "PR identity ok" not in proc.stdout
+    assert proc.stdout.rstrip().endswith(SAME_PR), blob
+    for line in proc.stdout.splitlines():
+        if line.startswith("::error::"):
+            assert "Fix:" in line, line
 
 
 def test_good_commit_passes(tmp_path, step_run):
@@ -209,6 +226,7 @@ def test_good_commit_passes(tmp_path, step_run):
     assert proc.returncode == 0, blob
     assert "PR identity ok" in proc.stdout
     assert "::error::" not in proc.stdout
+    assert SAME_PR not in proc.stdout
 
 
 def test_bad_author_email_fails(tmp_path, step_run):
@@ -234,7 +252,7 @@ def test_bad_committer_email_fails(tmp_path, step_run):
 
 
 def test_missing_doer_fails(tmp_path, step_run):
-    message = "Update template\n\nGrader: Beta (seat two)\n"
+    message = "Update template\n\nGrader: Hester Quill\n"
     proc, head = run_identity(tmp_path, step_run, GOOD_BODY, [{"message": message}])
     assert_fail(proc, f"commit {head[:7]} needs a filled-in 'Doer:' line")
 
@@ -242,9 +260,9 @@ def test_missing_doer_fails(tmp_path, step_run):
 def test_two_grader_lines_fails(tmp_path, step_run):
     message = (
         "Update template\n\n"
-        "Doer: Alpha (seat one)\n"
-        "Grader: Beta (seat two)\n"
-        "Grader: Beta (seat two)\n"
+        "Doer: Lyska\n"
+        "Grader: Hester Quill\n"
+        "Grader: Ines\n"
     )
     proc, head = run_identity(tmp_path, step_run, GOOD_BODY, [{"message": message}])
     assert_fail(proc, f"commit {head[:7]} must have exactly one 'Grader:' line (found 2)")
@@ -261,13 +279,7 @@ def test_two_grader_lines_fails(tmp_path, step_run):
 @pytest.mark.parametrize("where", ["commit", "body"])
 def test_doer_equals_grader_fails(tmp_path, step_run, grader, where):
     bad = f"Doer: Alpha (seat one)\nGrader: {grader}\n"
-    good = "Doer: Alpha (seat one)\nGrader: Beta (seat two)\n"
-    if where == "commit":
-        body = f"Closes #3\n\n{good}"
-        message = f"Update template\n\n{bad}"
-    else:
-        body = f"Closes #3\n\n{bad}"
-        message = f"Update template\n\n{good}"
+    body, message = placed(where, bad)
     proc, head = run_identity(tmp_path, step_run, body, [{"message": message}])
     assert_fail(proc, "Doer and Grader name the same seat")
     if where == "commit":
@@ -361,7 +373,7 @@ def test_empty_grader_value_fails(tmp_path, step_run, where):
 
 
 def test_lowercase_doer_key_passes(tmp_path, step_run):
-    message = "Update template\n\ndoer: Alpha (seat one)\nGrader: Beta (seat two)\n"
+    message = "Update template\n\ndoer: Lyska\nGrader: Hester Quill\n"
     proc, _head = run_identity(tmp_path, step_run, GOOD_BODY, [{"message": message}])
     blob = proc.stdout + proc.stderr
     assert proc.returncode == 0, blob
@@ -372,16 +384,16 @@ def test_lowercase_doer_key_passes(tmp_path, step_run):
 def test_duplicate_doer_key_ignores_case(tmp_path, step_run):
     message = (
         "Update template\n\n"
-        "Doer: Alpha (seat one)\n"
-        "doer: Gamma (seat three)\n"
-        "Grader: Beta (seat two)\n"
+        "Doer: Lyska\n"
+        "doer: Hester Quill\n"
+        "Grader: Ines\n"
     )
     proc, head = run_identity(tmp_path, step_run, GOOD_BODY, [{"message": message}])
     assert_fail(proc, f"commit {head[:7]} must have exactly one 'Doer:' line (found 2)")
 
 
 def test_midline_doer_does_not_count(tmp_path, step_run):
-    message = "Note: see Doer: Alpha (seat one)\nGrader: Beta (seat two)\n"
+    message = "Note: see Doer: Lyska\nGrader: Hester Quill\n"
     proc, head = run_identity(tmp_path, step_run, GOOD_BODY, [{"message": message}])
     assert_fail(proc, f"commit {head[:7]} needs a filled-in 'Doer:' line")
 
@@ -483,10 +495,166 @@ def test_missing_event_name_fails(tmp_path, step_run):
         event=None,
     )
     assert_fail(proc, "EVENT_NAME is empty")
-    assert proc.stdout.strip() == "::error::EVENT_NAME is empty"
+    assert "Fix: set EVENT_NAME to pull_request or pull_request_target." in proc.stdout
 
 
 def test_issue_link_inside_html_comment_does_not_count(tmp_path, step_run):
-    body = "<!-- Closes #3 -->\nDoer: Alpha (seat one)\nGrader: Beta (seat two)\n"
+    body = "<!-- Closes #3 -->\n" + GOOD_BODY.replace("Closes #3\n", "")
     proc, _head = run_identity(tmp_path, step_run, body, [{"message": GOOD_MSG}])
     assert_fail(proc, "PR body must link an issue")
+
+
+def body_with_lines(count, first="For Dread: length check"):
+    rows = [
+        first,
+        "Closes #3",
+        "Doer: Lyska",
+        "Grader: Hester Quill",
+        "Problem: length",
+        "Fix: cap the body",
+        "Tested: pytest passed",
+        "Not checked / Risk: none",
+    ]
+    extra = 0
+    while len(rows) < count:
+        extra += 1
+        rows.append(f"Note: extra {extra}")
+    if len(rows) != count:
+        raise AssertionError(len(rows))
+    return "\n".join(rows) + "\n"
+
+
+def assert_pass(proc):
+    blob = proc.stdout + proc.stderr
+    assert proc.returncode == 0, blob
+    assert "PR identity ok" in proc.stdout
+    assert "::error::" not in proc.stdout
+    assert SAME_PR not in proc.stdout
+
+
+@pytest.mark.parametrize("where", ["body", "commit"])
+@pytest.mark.parametrize("grader", ["self-merge", "Self-Merge", "SELF-MERGE", "self-merge (no grade)"])
+def test_self_merge_grader_passes(tmp_path, step_run, where, grader):
+    if where == "body":
+        body = GOOD_BODY.replace("Grader: Hester Quill\n", f"Grader: {grader}\n")
+        message = GOOD_MSG
+    else:
+        body = GOOD_BODY
+        message = f"Update template\n\nDoer: Lyska\nGrader: {grader}\n"
+    proc, _head = run_identity(tmp_path, step_run, body, [{"message": message}])
+    assert_pass(proc)
+
+
+@pytest.mark.parametrize("name", ["Rei", "Priya", "Lyska Embervane"])
+@pytest.mark.parametrize("where", ["body", "commit"])
+@pytest.mark.parametrize("role", ["Doer", "Grader"])
+def test_retired_names_fail(tmp_path, step_run, name, where, role):
+    if role == "Doer":
+        bad = f"Doer: {name}\nGrader: Hester Quill\n"
+    else:
+        bad = f"Doer: Lyska\nGrader: {name}\n"
+    body, message = placed(where, bad)
+    proc, _head = run_identity(tmp_path, step_run, body, [{"message": message}])
+    assert_fail(proc, f"{role} value {name!r} is not a current seat")
+
+
+def test_twelve_nonblank_lines_pass(tmp_path, step_run):
+    proc, _head = run_identity(
+        tmp_path, step_run, body_with_lines(12), [{"message": GOOD_MSG}]
+    )
+    assert_pass(proc)
+
+
+def test_thirteen_nonblank_lines_fail(tmp_path, step_run):
+    proc, _head = run_identity(
+        tmp_path, step_run, body_with_lines(13), [{"message": GOOD_MSG}]
+    )
+    assert_fail(proc, "PR body has 13 non-blank lines, more than 12")
+    assert "Fix: delete non-blank lines until 12 or fewer remain." in proc.stdout
+
+
+def test_html_comment_lines_do_not_count_toward_max(tmp_path, step_run):
+    hidden = "\n".join(f"Hidden: {i}" for i in range(5))
+    body = body_with_lines(12) + "<!--\n" + hidden + "\n-->\n"
+    proc, _head = run_identity(tmp_path, step_run, body, [{"message": GOOD_MSG}])
+    assert_pass(proc)
+
+
+@pytest.mark.parametrize(
+    "first",
+    ["Hello", "For Dread:", "for dread: text", "  For Dread: text"],
+)
+def test_bad_for_dread_fails(tmp_path, step_run, first):
+    body = first + "\n" + GOOD_BODY.split("\n", 1)[1]
+    proc, _head = run_identity(tmp_path, step_run, body, [{"message": GOOD_MSG}])
+    assert_fail(proc, "PR body first non-blank line does not match ^For Dread:\\s*\\S")
+    assert "Fix: start the body with 'For Dread: <what this PR is>'." in proc.stdout
+
+
+def test_leading_blank_lines_still_see_for_dread(tmp_path, step_run):
+    proc, _head = run_identity(
+        tmp_path, step_run, "\n\n" + GOOD_BODY, [{"message": GOOD_MSG}]
+    )
+    assert_pass(proc)
+
+
+@pytest.mark.parametrize("tested_line", ["", "Tested:", "Tested:   "])
+def test_missing_or_empty_tested_fails(tmp_path, step_run, tested_line):
+    if tested_line == "":
+        body = GOOD_BODY.replace("Tested: pytest passed\n", "")
+    else:
+        body = GOOD_BODY.replace("Tested: pytest passed", tested_line)
+    proc, _head = run_identity(tmp_path, step_run, body, [{"message": GOOD_MSG}])
+    assert_fail(proc, "PR body needs a Tested: line with non-empty text")
+    assert "Fix: add a line 'Tested: <command you ran and the result>'." in proc.stdout
+
+
+@pytest.mark.parametrize(
+    "doer,grader",
+    [
+        ("Lyska", "Hester"),
+        ("hester quill", "Sidony"),
+        ("Sidony Quire", "Oralie"),
+        ("calla", "Calla Wrenfield"),
+        ("Ines", "ines varro"),
+        ("Oralie", "Lyska"),
+        ("Calla Wrenfield", "Ines Varro"),
+        ("Hester", "Ines"),
+        ("Sidony", "Calla"),
+        ("\uff2cyska", "Hester Quill"),
+        ("Lys\u200bka", "Hester"),
+        ("Hester   Quill", "Ines"),
+    ],
+)
+def test_current_seats_pass(tmp_path, step_run, doer, grader):
+    body = GOOD_BODY.replace("Doer: Lyska\n", f"Doer: {doer}\n").replace(
+        "Grader: Hester Quill\n", f"Grader: {grader}\n"
+    )
+    proc, _head = run_identity(tmp_path, step_run, body, [{"message": GOOD_MSG}])
+    assert_pass(proc)
+
+
+def test_parenthetical_seat_passes(tmp_path, step_run):
+    body = GOOD_BODY.replace("Doer: Lyska\n", "Doer: Lyska (seat)\n").replace(
+        "Grader: Hester Quill\n", "Grader: Hester (grade)\n"
+    )
+    proc, _head = run_identity(tmp_path, step_run, body, [{"message": GOOD_MSG}])
+    assert_pass(proc)
+
+
+@pytest.mark.parametrize("where", ["body", "commit"])
+def test_same_current_seat_fails(tmp_path, step_run, where):
+    bad = "Doer: Lyska\nGrader: lyska\n"
+    body, message = placed(where, bad)
+    proc, head = run_identity(tmp_path, step_run, body, [{"message": message}])
+    assert_fail(proc, "Doer and Grader name the same seat")
+    if where == "commit":
+        assert f"commit {head[:7]}" in proc.stdout
+
+
+def test_doer_self_merge_fails(tmp_path, step_run):
+    bad = "Doer: self-merge\nGrader: self-merge\n"
+    body, message = placed("body", bad)
+    proc, _head = run_identity(tmp_path, step_run, body, [{"message": message}])
+    assert_fail(proc, "Doer value 'self-merge' is not a current seat")
+    assert "Doer and Grader name the same seat" not in proc.stdout

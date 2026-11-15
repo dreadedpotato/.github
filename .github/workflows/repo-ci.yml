@@ -1,17 +1,3 @@
-# Reusable org CI template. Each repo calls it with a short caller workflow.
-# Dread (2026-10-26): CI on every repo; runners clean up after themselves;
-# read values from settings, never hardcode; no machine details in READMEs.
-# Callers must list 'edited' in pull_request types so a body edit re-runs the
-# body check, and wrap number variables in fromJSON, for example:
-#   on:
-#     pull_request:
-#       types: [opened, synchronize, reopened, edited]
-#   jobs:
-#     ci:
-#       uses: dreadedpotato/.github/.github/workflows/repo-ci.yml@<sha>
-#       with:
-#         runner: ${{ vars.CI_RUNNER_LABEL || 'ubuntu-latest' }}
-#         max-file-mb: ${{ fromJSON(vars.CI_MAX_FILE_MB || '10') }}
 name: repo-ci
 
 on:
@@ -57,11 +43,16 @@ jobs:
         shell: bash
         run: |
           readme=$(ls README.md README README.markdown readme.md 2>/dev/null | head -n1 || true)
-          if [ -z "$readme" ]; then echo "::error::No README found"; exit 1; fi
+          if [ -z "$readme" ]; then
+            echo "::error::No README found. Fix: add a README with exactly one line 'Repo tier: TEST' or 'Repo tier: PROD'."
+            echo "Fix it on this same PR: push the fix to this branch. Do not close and reopen a copy. Do not rerun CI without a change."
+            exit 1
+          fi
           all=$(grep -c '^Repo tier:' "$readme" || true)
           ok=$(grep -cE '^Repo tier: (TEST|PROD)[[:space:]]*$' "$readme" || true)
           if [ "$all" != "1" ] || [ "$ok" != "1" ]; then
-            echo "::error file=$readme::Need exactly one line 'Repo tier: TEST' or 'Repo tier: PROD' (found $all tier lines, $ok valid)"
+            echo "::error file=$readme::Need exactly one line 'Repo tier: TEST' or 'Repo tier: PROD' (found $all tier lines, $ok valid). Fix: leave exactly one line 'Repo tier: TEST' or 'Repo tier: PROD' in $readme."
+            echo "Fix it on this same PR: push the fix to this branch. Do not close and reopen a copy. Do not rerun CI without a change."
             exit 1
           fi
           echo "$(grep -E '^Repo tier:' "$readme")"
@@ -76,9 +67,31 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
         run: |
           import os, re, subprocess, sys, unicodedata
+          SAME_PR = (
+              "Fix it on this same PR: edit the PR body or push the fix to this branch. "
+              "Do not close and reopen a copy. Do not rerun CI without a change."
+          )
+          BODY_MAX_LINES = 12
+          SEATS = {
+              "lyska",
+              "hester quill",
+              "hester",
+              "sidony quire",
+              "sidony",
+              "oralie",
+              "calla wrenfield",
+              "calla",
+              "ines varro",
+              "ines",
+          }
+          SEAT_FIX = (
+              "Lyska, Hester Quill, Sidony Quire, Oralie, Calla Wrenfield, Ines Varro "
+              "(a first name alone is fine)"
+          )
           event = (os.environ.get("EVENT_NAME") or "").strip()
           if not event:
-              print("::error::EVENT_NAME is empty")
+              print("::error::EVENT_NAME is empty. Fix: set EVENT_NAME to pull_request or pull_request_target.")
+              print(SAME_PR)
               sys.exit(1)
           if event not in ("pull_request", "pull_request_target"):
               notice = f"PR identity check not applicable to event '{event}' (runs on pull_request and pull_request_target)"
@@ -99,6 +112,10 @@ jobs:
               s = "".join(ch for ch in s if unicodedata.category(ch) != "Cf")
               s = re.sub(r"\s+", " ", s).strip().casefold()
               return s
+          def shown_seat(raw):
+              return re.sub(r"\s*\([^)]*\)\s*$", "", raw).strip()
+          def seat_key(raw):
+              return norm(shown_seat(raw))
           def git_out(args):
               try:
                   proc = subprocess.run(["git", *args], capture_output=True, text=True)
@@ -116,26 +133,85 @@ jobs:
               for name in ("Doer", "Grader"):
                   ms = re.findall(rf"^[ \t]*{name}[ \t]*:[ \t]*(.*?)[ \t]*$", text, re.I | re.M)
                   if len(ms) > 1:
-                      note(f"must have exactly one '{name}:' line (found {len(ms)})")
+                      note(
+                          f"must have exactly one '{name}:' line (found {len(ms)}). "
+                          f"Fix: leave exactly one '{name}:' line."
+                      )
                   elif len(ms) == 0 or not ms[0].strip():
-                      note(f"needs a filled-in '{name}:' line")
+                      if name == "Doer":
+                          note("needs a filled-in 'Doer:' line. Fix: add one line 'Doer: <current seat>'.")
+                      else:
+                          note(
+                              "needs a filled-in 'Grader:' line. "
+                              "Fix: add one line 'Grader: <current seat or self-merge>'."
+                          )
                   else:
-                      value = ms[0].strip()
-                      accepted[name] = value
-              if "Doer" in accepted and "Grader" in accepted and norm(accepted["Doer"]) == norm(accepted["Grader"]):
-                  note("Doer and Grader name the same seat")
+                      accepted[name] = ms[0].strip()
+              if "Doer" in accepted and seat_key(accepted["Doer"]) not in SEATS:
+                  note(
+                      f"Doer value {shown_seat(accepted['Doer'])!r} is not a current seat. "
+                      f"Fix: set Doer to one of {SEAT_FIX}."
+                  )
+              if (
+                  "Grader" in accepted
+                  and seat_key(accepted["Grader"]) != "self-merge"
+                  and seat_key(accepted["Grader"]) not in SEATS
+              ):
+                  note(
+                      f"Grader value {shown_seat(accepted['Grader'])!r} is not a current seat. "
+                      f"Fix: set Grader to one of {SEAT_FIX}, or exactly self-merge."
+                  )
+              if (
+                  "Doer" in accepted
+                  and "Grader" in accepted
+                  and seat_key(accepted["Grader"]) != "self-merge"
+                  and seat_key(accepted["Doer"]) == seat_key(accepted["Grader"])
+              ):
+                  note(
+                      "Doer and Grader name the same seat. "
+                      "Fix: set Grader to a different current seat, or exactly self-merge."
+                  )
           if not allowed:
-              errs.append("ALLOWED_EMAIL is empty")
+              errs.append(
+                  "ALLOWED_EMAIL is empty. "
+                  "Fix: set the allowed-email input or the CI_ALLOWED_EMAIL repository or organization variable."
+              )
           if not body.strip():
-              errs.append("PR body is empty")
+              errs.append(
+                  "PR body is empty. "
+                  "Fix: write the PR body in the repo-loop template, starting with 'For Dread: <what this PR is>'."
+              )
+          lines = [ln for ln in body.split("\n") if ln.strip()]
+          if not lines or not re.match(r"^For Dread:\s*\S", lines[0]):
+              errs.append(
+                  "PR body first non-blank line does not match ^For Dread:\\s*\\S. "
+                  "Fix: start the body with 'For Dread: <what this PR is>'."
+              )
+          if len(lines) > BODY_MAX_LINES:
+              errs.append(
+                  f"PR body has {len(lines)} non-blank lines, more than {BODY_MAX_LINES}. "
+                  f"Fix: delete non-blank lines until {BODY_MAX_LINES} or fewer remain."
+              )
           issue = re.search(r"\b(close[sd]?|fix(e[sd])?|resolve[sd]?)\s+#\d+\b", body, re.I) or re.search(
               r"https://github\.com/[\w.-]+/[\w.-]+/issues/\d+", body
           )
           if not issue:
-              errs.append("PR body must link an issue: 'Closes #<n>', 'Fixes #<n>', or an issue URL")
+              errs.append(
+                  "PR body must link an issue: 'Closes #<n>', 'Fixes #<n>', or an issue URL. "
+                  "Fix: add 'Closes #<n>', 'Fixes #<n>', or a full GitHub issue URL."
+              )
+          tested_vals = re.findall(r"^[ \t]*Tested[ \t]*:[ \t]*(.*?)[ \t]*$", body, re.I | re.M)
+          if not any(v.strip() for v in tested_vals):
+              errs.append(
+                  "PR body needs a Tested: line with non-empty text. "
+                  "Fix: add a line 'Tested: <command you ran and the result>'."
+              )
           check_roles(body, "PR body")
           if not base or not head:
-              errs.append("BASE_SHA and HEAD_SHA are required")
+              errs.append(
+                  "BASE_SHA and HEAD_SHA are required. "
+                  "Fix: set BASE_SHA and HEAD_SHA to the pull request base and head SHAs."
+              )
           else:
               if event == "pull_request_target":
                   probe = subprocess.run(
@@ -154,32 +230,50 @@ jobs:
                       )
               listed, gerr = git_out(["rev-list", "--reverse", f"{base}..{head}"])
               if listed is None:
-                  errs.append(f"git rev-list {base}..{head} failed: {gerr}")
+                  errs.append(
+                      f"git rev-list {base}..{head} failed: {gerr}. "
+                      "Fix: fetch both commits so git rev-list can see the PR range."
+                  )
               else:
                   shas = [line.strip() for line in listed.splitlines() if line.strip()]
                   if not shas:
-                      errs.append("PR range contains zero commits")
+                      errs.append(
+                          "PR range contains zero commits. Fix: push at least one commit to this branch."
+                      )
                   for sha in shas:
                       short = sha[:7]
                       raw, gerr = git_out(["log", "-1", "--format=%ae%x00%ce%x00%B", sha])
                       if raw is None:
-                          errs.append(f"{short}: git log failed: {gerr}")
+                          errs.append(
+                              f"{short}: git log failed: {gerr}. "
+                              f"Fix: make commit {short} readable with git log and push the fix to this branch."
+                          )
                       else:
                           parts = raw.split("\0", 2)
                           if len(parts) != 3:
-                              errs.append(f"{short}: commit record is incomplete")
+                              errs.append(
+                                  f"{short}: commit record is incomplete. "
+                                  f"Fix: record author email, committer email, and message on commit {short} and push the fix to this branch."
+                              )
                           else:
                               author = parts[0].strip()
                               committer = parts[1].strip()
                               message = parts[2]
                               if author.lower() != allowed.lower():
-                                  errs.append(f"{short}: author email {author!r} is not the allowed email {allowed!r}")
+                                  errs.append(
+                                      f"{short}: author email {author!r} is not the allowed email {allowed!r}. "
+                                      f"Fix: set the author email on commit {short} to {allowed!r} and push the fix to this branch."
+                                  )
                               if committer.lower() != allowed.lower():
-                                  errs.append(f"{short}: committer email {committer!r} is not the allowed email {allowed!r}")
+                                  errs.append(
+                                      f"{short}: committer email {committer!r} is not the allowed email {allowed!r}. "
+                                      f"Fix: set the committer email on commit {short} to {allowed!r} and push the fix to this branch."
+                                  )
                               check_roles(message, f"commit {short}")
           for e in errs:
               print(f"::error::{e}")
           if errs:
+              print(SAME_PR)
               sys.exit(1)
           print("PR identity ok")
           sys.exit(0)
@@ -189,18 +283,19 @@ jobs:
         env:
           MAX_MB: ${{ inputs.max-file-mb }}
         run: |
-          # Checkout runs without LFS, so LFS files are small pointers and pass.
-          # Integer bytes even if the limit is given as a decimal (e.g. 2.5).
           limit=$(awk -v m="$MAX_MB" 'BEGIN { printf "%d", m * 1048576 }')
           bad=0
           while IFS= read -r -d '' f; do
             [ -f "$f" ] || continue
             sz=$(stat -c %s "$f")
             if [ "$sz" -gt "$limit" ]; then
-              echo "::error file=$f::$f is $(( sz / 1024 / 1024 )) MB, over the ${MAX_MB} MB limit. Use Git LFS or keep it outside git."
+              echo "::error file=$f::$f is $(( sz / 1024 / 1024 )) MB, over the ${MAX_MB} MB limit. Fix: use Git LFS for this file or keep it outside git."
               bad=1
             fi
           done < <(git ls-files -z)
+          if [ "$bad" -ne 0 ]; then
+            echo "Fix it on this same PR: push the fix to this branch. Do not close and reopen a copy. Do not rerun CI without a change."
+          fi
           exit $bad
 
       - name: Tests (repo's own entry; none found is a failure)
@@ -230,7 +325,8 @@ jobs:
             echo "::warning::No test entry found. Declared reason: $NO_TESTS_REASON"
             echo "### Tests not run. Declared reason: $NO_TESTS_REASON" >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "::error::No test entry found (make test, npm test, pytest, cargo test). Add tests (a custom runner goes behind a make test target), or set no-tests-reason in the caller for a repo with no test framework yet."
+            echo "::error::No test entry found (make test, npm test, pytest, cargo test). Fix: add tests (a custom runner goes behind a make test target), or set no-tests-reason in the caller for a repo with no test framework yet."
+            echo "Fix it on this same PR: push the fix to this branch. Do not close and reopen a copy. Do not rerun CI without a change."
             exit 1
           fi
 
