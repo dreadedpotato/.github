@@ -16,6 +16,10 @@ SAME_PR = (
     "Fix it on this same PR: edit the PR body or push the fix to this branch. "
     "Do not close and reopen a copy. Do not rerun CI without a change."
 )
+PROD_SELF_MERGE = (
+    "Grader: self-merge is not allowed on a PROD repo (README says Repo tier: PROD). "
+    "Fix: set Grader: Hester Quill (a named current seat) in the PR body and the commit trailers."
+)
 GOOD_BODY = (
     "For Dread: identity check\n"
     "Closes #3\n"
@@ -125,11 +129,19 @@ def run_identity(
     head_override=None,
     event="pull_request",
     summary_path=None,
+    readme="# Caller\nRepo tier: TEST\n",
+    readme_name="README.md",
+    head_readme=None,
 ):
     repo = tmp_path / "repo"
     repo.mkdir()
     git(repo, "init")
-    git(repo, "commit", "--allow-empty", "-m", "base")
+    if readme is not None:
+        (repo / readme_name).write_text(readme)
+        git(repo, "add", readme_name)
+        git(repo, "commit", "-m", "base")
+    else:
+        git(repo, "commit", "--allow-empty", "-m", "base")
     base = head_sha(repo)
     branch = git_stdout(repo, "rev-parse", "--abbrev-ref", "HEAD").strip()
     side_n = 0
@@ -170,6 +182,10 @@ def run_identity(
                 author=author,
                 committer=committer,
             )
+    if head_readme is not None:
+        (repo / readme_name).write_text(head_readme)
+        git(repo, "add", readme_name)
+        git(repo, "commit", "-m", "head readme")
     head = head_override if head_override is not None else head_sha(repo)
     path = tmp_path / "pr_identity_step.py"
     path.write_text(script)
@@ -658,3 +674,113 @@ def test_doer_self_merge_fails(tmp_path, step_run):
     proc, _head = run_identity(tmp_path, step_run, body, [{"message": message}])
     assert_fail(proc, "Doer value 'self-merge' is not a current seat")
     assert "Doer and Grader name the same seat" not in proc.stdout
+
+
+@pytest.mark.parametrize("readme_name", ["README.md", "README", "README.markdown", "readme.md"])
+def test_prod_readme_body_self_merge_fails(tmp_path, step_run, readme_name):
+    body = GOOD_BODY.replace("Grader: Hester Quill\n", "Grader: self-merge\n")
+    proc, _head = run_identity(
+        tmp_path,
+        step_run,
+        body,
+        [{"message": GOOD_MSG}],
+        readme="Repo tier: PROD\n",
+        readme_name=readme_name,
+    )
+    assert_fail(proc, PROD_SELF_MERGE)
+
+
+def test_prod_readme_commit_self_merge_fails(tmp_path, step_run):
+    message = "Update template\n\nDoer: Lyska\nGrader: self-merge\n"
+    proc, _head = run_identity(
+        tmp_path,
+        step_run,
+        GOOD_BODY,
+        [{"message": message}],
+        readme="Repo tier: PROD\n",
+    )
+    assert_fail(proc, PROD_SELF_MERGE)
+
+
+@pytest.mark.parametrize("where", ["body", "commit"])
+def test_test_readme_self_merge_passes(tmp_path, step_run, where):
+    if where == "body":
+        body = GOOD_BODY.replace("Grader: Hester Quill\n", "Grader: self-merge\n")
+        message = GOOD_MSG
+    else:
+        body = GOOD_BODY
+        message = "Update template\n\nDoer: Lyska\nGrader: self-merge\n"
+    proc, _head = run_identity(
+        tmp_path,
+        step_run,
+        body,
+        [{"message": message}],
+        readme="Repo tier: TEST\n",
+    )
+    assert_pass(proc)
+
+
+def test_prod_readme_named_grader_passes(tmp_path, step_run):
+    proc, _head = run_identity(
+        tmp_path,
+        step_run,
+        GOOD_BODY,
+        [{"message": GOOD_MSG}],
+        readme="Repo tier: PROD\n",
+    )
+    assert_pass(proc)
+
+
+def test_ambiguous_tier_lines_self_merge_fails(tmp_path, step_run):
+    body = GOOD_BODY.replace("Grader: Hester Quill\n", "Grader: self-merge\n")
+    proc, _head = run_identity(
+        tmp_path,
+        step_run,
+        body,
+        [{"message": GOOD_MSG}],
+        readme="Repo tier: TEST\nRepo tier: PROD\n",
+    )
+    assert_fail(proc, PROD_SELF_MERGE)
+
+
+def test_missing_readme_self_merge_fails(tmp_path, step_run):
+    body = GOOD_BODY.replace("Grader: Hester Quill\n", "Grader: self-merge\n")
+    proc, _head = run_identity(
+        tmp_path,
+        step_run,
+        body,
+        [{"message": GOOD_MSG}],
+        readme=None,
+    )
+    assert_fail(proc, PROD_SELF_MERGE)
+
+
+@pytest.mark.parametrize("where", ["body", "commit"])
+def test_missing_tier_line_self_merge_fails(tmp_path, step_run, where):
+    if where == "body":
+        body = GOOD_BODY.replace("Grader: Hester Quill\n", "Grader: self-merge\n")
+        message = GOOD_MSG
+    else:
+        body = GOOD_BODY
+        message = "Update template\n\nDoer: Lyska\nGrader: self-merge\n"
+    proc, _head = run_identity(
+        tmp_path,
+        step_run,
+        body,
+        [{"message": message}],
+        readme="# Caller\n",
+    )
+    assert_fail(proc, PROD_SELF_MERGE)
+
+
+def test_base_prod_head_test_readme_self_merge_fails(tmp_path, step_run):
+    body = GOOD_BODY.replace("Grader: Hester Quill\n", "Grader: self-merge\n")
+    proc, _head = run_identity(
+        tmp_path,
+        step_run,
+        body,
+        [{"message": GOOD_MSG}],
+        readme="Repo tier: PROD\n",
+        head_readme="Repo tier: TEST\n",
+    )
+    assert_fail(proc, PROD_SELF_MERGE)
