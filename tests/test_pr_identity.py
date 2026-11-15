@@ -33,6 +33,8 @@ GOOD_BODY = (
     "Not checked / Risk: none\n"
 )
 GOOD_MSG = "Update template\n\nDoer: Lyska\nGrader: Hester Quill\n"
+DEFAULT_SEATS_URL = "https://raw.githubusercontent.com/dreadedpotato/.github/main/seats.txt"
+DEAD_SEATS_URL = "file:///no-such-seats.txt"
 
 
 @pytest.fixture(scope="module")
@@ -120,6 +122,18 @@ def placed(where, bad):
     return body, GOOD_MSG
 
 
+def seat_lines():
+    return [
+        line.strip()
+        for line in (ROOT / "seats.txt").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+
+def write_seats(path, names):
+    path.write_text("".join(name + "\n" for name in names), encoding="utf-8")
+
+
 def run_identity(
     tmp_path,
     script,
@@ -129,6 +143,10 @@ def run_identity(
     head_override=None,
     event="pull_request",
     summary_path=None,
+    seats_file=None,
+    github_repository=None,
+    local_seats=None,
+    seats_url=None,
     readme="# Caller\nRepo tier: TEST\n",
     readme_name="README.md",
     head_readme=None,
@@ -187,8 +205,11 @@ def run_identity(
         git(repo, "add", readme_name)
         git(repo, "commit", "-m", GOOD_MSG)
     head = head_override if head_override is not None else head_sha(repo)
+    script_text = script
+    if seats_url is not None:
+        script_text = script_text.replace(DEFAULT_SEATS_URL, seats_url, 1)
     path = tmp_path / "pr_identity_step.py"
-    path.write_text(script)
+    path.write_text(script_text)
     env = os.environ.copy()
     for key in list(env):
         if key.startswith("GIT_"):
@@ -207,6 +228,19 @@ def run_identity(
     env.pop("GITHUB_STEP_SUMMARY", None)
     if summary_path is not None:
         env["GITHUB_STEP_SUMMARY"] = str(summary_path)
+    if github_repository is None:
+        env.pop("GITHUB_REPOSITORY", None)
+    else:
+        env["GITHUB_REPOSITORY"] = github_repository
+    if seats_file is False:
+        env.pop("SEATS_FILE", None)
+    else:
+        if seats_file is None:
+            seats_file = tmp_path / "seats.txt"
+            write_seats(seats_file, seat_lines())
+        env["SEATS_FILE"] = str(seats_file)
+    if local_seats is not None:
+        write_seats(repo / "seats.txt", local_seats)
     proc = subprocess.run(
         ["python3", str(path)],
         cwd=repo,
@@ -354,6 +388,10 @@ def test_repo_ci_yml_has_no_hardcoded_identity():
     assert "@users.noreply.github.com" not in text
     for banned in ("(Stream seat)", "(Shard seat)", "(Chief of Staff)"):
         assert banned not in text
+    assert "https://raw.githubusercontent.com/dreadedpotato/.github/main/seats.txt" in text
+    assert "SEATS_FILE" in text
+    assert "urlopen(SEATS_URL, timeout=10)" in text
+    assert "SEATS = {" not in text
 
 
 @pytest.mark.parametrize(
@@ -674,6 +712,109 @@ def test_doer_self_merge_fails(tmp_path, step_run):
     proc, _head = run_identity(tmp_path, step_run, body, [{"message": message}])
     assert_fail(proc, "Doer value 'self-merge' is not a current seat")
     assert "Doer and Grader name the same seat" not in proc.stdout
+
+
+def test_added_seat_name_is_accepted(tmp_path, step_run):
+    seats = tmp_path / "added-seats.txt"
+    write_seats(seats, seat_lines() + ["Mira Sol"])
+    body = GOOD_BODY.replace("Grader: Hester Quill\n", "Grader: Mira Sol\n")
+    message = "Update template\n\nDoer: Lyska\nGrader: Mira Sol\n"
+    proc, _head = run_identity(
+        tmp_path, step_run, body, [{"message": message}], seats_file=seats
+    )
+    assert_pass(proc)
+
+
+def test_removed_seat_name_is_rejected(tmp_path, step_run):
+    seats = tmp_path / "removed-seats.txt"
+    write_seats(seats, [name for name in seat_lines() if name != "Lyska"])
+    proc, _head = run_identity(
+        tmp_path, step_run, GOOD_BODY, [{"message": GOOD_MSG}], seats_file=seats
+    )
+    assert_fail(proc, "Doer value 'Lyska' is not a current seat")
+    assert (
+        "Fix: set Doer to one of Hester Quill, Sidony Quire, Calla Wrenfield, "
+        "Ines Varro (a first name alone is fine)."
+    ) in proc.stdout
+
+
+def test_first_name_alone_is_accepted(tmp_path, step_run):
+    seats = tmp_path / "first-seats.txt"
+    write_seats(seats, seat_lines() + ["Mira Sol"])
+    body = GOOD_BODY.replace("Grader: Hester Quill\n", "Grader: Mira\n")
+    message = "Update template\n\nDoer: Lyska\nGrader: Mira\n"
+    proc, _head = run_identity(
+        tmp_path, step_run, body, [{"message": message}], seats_file=seats
+    )
+    assert_pass(proc)
+
+
+@pytest.mark.parametrize("contents", [None, "", "\n", "   \n\t\n"])
+def test_unreadable_or_empty_seats_file_fails(tmp_path, step_run, contents):
+    path = tmp_path / "bad-seats.txt"
+    if contents is None:
+        seats_file = path
+    else:
+        path.write_text(contents, encoding="utf-8")
+        seats_file = path
+    proc, _head = run_identity(
+        tmp_path,
+        step_run,
+        GOOD_BODY,
+        [{"message": GOOD_MSG}],
+        seats_file=seats_file,
+    )
+    blob = proc.stdout + proc.stderr
+    assert proc.returncode == 1, blob
+    assert (
+        "::error::Could not read the seat list from "
+        "https://raw.githubusercontent.com/dreadedpotato/.github/main/seats.txt. "
+        "Fix: check that seats.txt exists on dreadedpotato/.github main; this is not a PR-body problem."
+        in proc.stdout
+    )
+    assert SAME_PR not in proc.stdout
+    assert "PR identity ok" not in proc.stdout
+
+
+def test_org_checkout_seats_used_when_fetch_fails(tmp_path, step_run):
+    names = seat_lines() + ["Mira Sol"]
+    body = GOOD_BODY.replace("Grader: Hester Quill\n", "Grader: Mira Sol\n")
+    message = "Update template\n\nDoer: Lyska\nGrader: Mira Sol\n"
+    proc, _head = run_identity(
+        tmp_path,
+        step_run,
+        body,
+        [{"message": message}],
+        seats_file=False,
+        github_repository="dreadedpotato/.github",
+        local_seats=names,
+        seats_url=DEAD_SEATS_URL,
+    )
+    assert_pass(proc)
+
+
+def test_other_repository_ignores_checkout_seats(tmp_path, step_run):
+    names = seat_lines() + ["Mira Sol"]
+    body = GOOD_BODY.replace("Grader: Hester Quill\n", "Grader: Mira Sol\n")
+    message = "Update template\n\nDoer: Lyska\nGrader: Mira Sol\n"
+    proc, _head = run_identity(
+        tmp_path,
+        step_run,
+        body,
+        [{"message": message}],
+        seats_file=False,
+        github_repository="example/other",
+        local_seats=names,
+        seats_url=DEAD_SEATS_URL,
+    )
+    blob = proc.stdout + proc.stderr
+    assert proc.returncode == 1, blob
+    assert (
+        "::error::Could not read the seat list from "
+        + DEAD_SEATS_URL
+        + ". Fix: check that seats.txt exists on dreadedpotato/.github main; this is not a PR-body problem."
+    ) in proc.stdout
+    assert "PR identity ok" not in proc.stdout
 
 
 @pytest.mark.parametrize("readme_name", ["README.md", "README", "README.markdown", "readme.md"])
