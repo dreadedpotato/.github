@@ -131,13 +131,17 @@ def run_identity(
     summary_path=None,
     readme="# Caller\nRepo tier: TEST\n",
     readme_name="README.md",
+    head_readme=None,
 ):
     repo = tmp_path / "repo"
     repo.mkdir()
+    git(repo, "init")
     if readme is not None:
         (repo / readme_name).write_text(readme)
-    git(repo, "init")
-    git(repo, "commit", "--allow-empty", "-m", "base")
+        git(repo, "add", readme_name)
+        git(repo, "commit", "-m", "base")
+    else:
+        git(repo, "commit", "--allow-empty", "-m", "base")
     base = head_sha(repo)
     branch = git_stdout(repo, "rev-parse", "--abbrev-ref", "HEAD").strip()
     side_n = 0
@@ -178,6 +182,10 @@ def run_identity(
                 author=author,
                 committer=committer,
             )
+    if head_readme is not None:
+        (repo / readme_name).write_text(head_readme)
+        git(repo, "add", readme_name)
+        git(repo, "commit", "-m", "head readme")
     head = head_override if head_override is not None else head_sha(repo)
     path = tmp_path / "pr_identity_step.py"
     path.write_text(script)
@@ -761,5 +769,18 @@ def test_missing_tier_line_self_merge_fails(tmp_path, step_run, where):
         body,
         [{"message": message}],
         readme="# Caller\n",
+    )
+    assert_fail(proc, PROD_SELF_MERGE)
+
+
+def test_base_prod_head_test_readme_self_merge_fails(tmp_path, step_run):
+    body = GOOD_BODY.replace("Grader: Hester Quill\n", "Grader: self-merge\n")
+    proc, _head = run_identity(
+        tmp_path,
+        step_run,
+        body,
+        [{"message": GOOD_MSG}],
+        readme="Repo tier: PROD\n",
+        head_readme="Repo tier: TEST\n",
     )
     assert_fail(proc, PROD_SELF_MERGE)

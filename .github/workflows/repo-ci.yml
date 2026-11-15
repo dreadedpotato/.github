@@ -126,22 +126,18 @@ jobs:
                   return None, detail
               return proc.stdout, ""
           def caller_tier():
-              chosen = ""
+              if not base:
+                  return "PROD"
               for name in ("README.md", "README", "README.markdown", "readme.md"):
-                  if os.path.isfile(name):
-                      chosen = name
-                      break
-              if not chosen:
-                  return "PROD"
-              try:
-                  with open(chosen, encoding="utf-8", errors="replace") as handle:
-                      raw = handle.read().replace("\r", "")
-              except OSError:
-                  return "PROD"
-              found = re.findall(r"^Repo tier: (TEST|PROD)\s*$", raw, re.M)
-              if len(found) != 1:
-                  return "PROD"
-              return found[0]
+                  out, _err = git_out(["show", f"{base}:{name}"])
+                  if out is None:
+                      continue
+                  raw = out.replace("\r", "")
+                  found = re.findall(r"^Repo tier: (TEST|PROD)\s*$", raw, re.M)
+                  if len(found) != 1:
+                      return "PROD"
+                  return found[0]
+              return "PROD"
           def check_roles(text, label):
               def note(msg):
                   errs.append(f"{label} {msg}" if label else msg)
