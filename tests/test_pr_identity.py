@@ -652,10 +652,10 @@ def test_missing_or_empty_tested_fails(tmp_path, step_run, tested_line):
     [
         ("Lyska", "Hester"),
         ("hester quill", "Sidony"),
-        ("Sidony Quire", "Oralie"),
+        ("Sidony Quire", "Hester Quill"),
         ("calla", "Calla Wrenfield"),
         ("Ines", "ines varro"),
-        ("Oralie", "Lyska"),
+        ("Ines Varro", "Lyska"),
         ("Calla Wrenfield", "Ines Varro"),
         ("Hester", "Ines"),
         ("Sidony", "Calla"),
@@ -717,7 +717,7 @@ def test_removed_seat_name_is_rejected(tmp_path, step_run):
     )
     assert_fail(proc, "Doer value 'Lyska' is not a current seat")
     assert (
-        "Fix: set Doer to one of Hester Quill, Sidony Quire, Oralie, Calla Wrenfield, "
+        "Fix: set Doer to one of Hester Quill, Sidony Quire, Calla Wrenfield, "
         "Ines Varro (a first name alone is fine)."
     ) in proc.stdout
 
