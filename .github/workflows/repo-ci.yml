@@ -103,9 +103,14 @@ jobs:
               return norm(shown_seat(raw))
           def load_seats():
               path = (os.environ.get("SEATS_FILE") or "").strip()
+              repo = (os.environ.get("GITHUB_REPOSITORY") or "").strip()
+              local = "./seats.txt"
               try:
                   if path:
                       with open(path, encoding="utf-8") as handle:
+                          text = handle.read()
+                  elif repo == "dreadedpotato/.github" and os.path.isfile(local):
+                      with open(local, encoding="utf-8") as handle:
                           text = handle.read()
                   else:
                       with urllib.request.urlopen(SEATS_URL, timeout=10) as handle:
