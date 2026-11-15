@@ -5,7 +5,7 @@ Repo tier: TEST
 
 ## PR identity check
 
-Every commit in the PR range and the PR body need exactly one `Doer:` line and one `Grader:` line. Grader may be `self-merge` for a TEST PR that needs no grade, and otherwise must differ from Doer. Seats are matched after Unicode NFKC normalization, removing invisible format characters, collapsing spaces, and ignoring case. The key is case-insensitive, so `doer:` counts and a second one is a duplicate. Lines inside HTML comments in the PR body are ignored.
+Every commit in the PR range and the PR body need exactly one `Doer:` line and one `Grader:` line. Grader may be `self-merge` for a TEST PR that needs no grade, and otherwise must differ from Doer. Self-merge is TEST only; PROD needs a named grader. Seats are matched after Unicode NFKC normalization, removing invisible format characters, collapsing spaces, and ignoring case. The key is case-insensitive, so `doer:` counts and a second one is a duplicate. Lines inside HTML comments in the PR body are ignored.
 
 After those comments are stripped, the PR body must start with a non-blank line `For Dread:` plus text, stay within 12 non-blank lines, and include one `Tested:` line with non-empty text. Doer and Grader must be current seats: Lyska, Hester Quill, Sidony Quire, Oralie, Calla Wrenfield, or Ines Varro. A first name alone is fine, and a trailing parenthetical is ignored. Grader may instead be exactly `self-merge`. Retired names, including Rei, Priya, and Lyska Embervane, fail. The body must still link an issue with `Closes #<n>`, `Fixes #<n>`, or an issue URL.
 

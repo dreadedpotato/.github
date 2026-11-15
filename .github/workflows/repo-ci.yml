@@ -125,6 +125,23 @@ jobs:
                   detail = (proc.stderr or proc.stdout or "").strip()
                   return None, detail
               return proc.stdout, ""
+          def caller_tier():
+              chosen = ""
+              for name in ("README.md", "README", "README.markdown", "readme.md"):
+                  if os.path.isfile(name):
+                      chosen = name
+                      break
+              if not chosen:
+                  return "PROD"
+              try:
+                  with open(chosen, encoding="utf-8", errors="replace") as handle:
+                      raw = handle.read().replace("\r", "")
+              except OSError:
+                  return "PROD"
+              found = re.findall(r"^Repo tier: (TEST|PROD)\s*$", raw, re.M)
+              if len(found) != 1:
+                  return "PROD"
+              return found[0]
           def check_roles(text, label):
               def note(msg):
                   errs.append(f"{label} {msg}" if label else msg)
@@ -171,6 +188,15 @@ jobs:
                       "Doer and Grader name the same seat. "
                       "Fix: set Grader to a different current seat, or exactly self-merge."
                   )
+              if (
+                  "Grader" in accepted
+                  and seat_key(accepted["Grader"]) == "self-merge"
+                  and tier == "PROD"
+              ):
+                  errs.append(
+                      "Grader: self-merge is not allowed on a PROD repo (README says Repo tier: PROD). "
+                      "Fix: set Grader: Hester Quill (a named current seat) in the PR body and the commit trailers."
+                  )
           if not allowed:
               errs.append(
                   "ALLOWED_EMAIL is empty. "
@@ -206,6 +232,7 @@ jobs:
                   "PR body needs a Tested: line with non-empty text. "
                   "Fix: add a line 'Tested: <command you ran and the result>'."
               )
+          tier = caller_tier()
           check_roles(body, "PR body")
           if not base or not head:
               errs.append(
