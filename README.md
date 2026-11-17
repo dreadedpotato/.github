@@ -13,7 +13,7 @@ Every failure names the exact fix. A failing run ends with: Fix it on this same 
 
 TEST PRs self-merge when CI is green, the PR-body check passes, and `Tested:` links live output for a visible change (`Grader: self-merge`). Risky PRs (PROD, CI, gates, checks, the template, PII, or secrets) need Hester's Grade: PASS first. PROD merges are Dread's.
 
-Every commit author and committer email must equal allowed-email, so the check rejects commits made in the GitHub web editor, "Update branch" merge commits, and bot commits, because they carry other emails and no Doer/Grader trailers. A merge commit whose non-first parents are already reachable from the PR base (a main-into-PR sync) is exempt from the Doer/Grader trailer rule; its author and committer email are still checked.
+Every commit author and committer email must equal allowed-email, so the check rejects commits made in the GitHub web editor, "Update branch" merge commits, and bot commits, because they carry other emails and no Doer/Grader trailers. A two-parent merge commit whose second parent is already reachable from the PR base (a main-into-PR sync) is exempt from the Doer/Grader trailer rule only when `git merge-tree --write-tree` of those parents exits 0 and the resulting tree equals the merge commit's tree. A conflict, a tree mismatch, an octopus merge, a missing or older-than-2.38 git, or any other failed merge-tree is not exempt. Author and committer email are still checked.
 
 The check runs on pull_request and pull_request_target, and posts a notice and skips on other events like push. `allowed-email` reads `vars.CI_ALLOWED_EMAIL` from the caller repository or organization settings by default. `with:` inputs still override, and the check fails closed when it is empty.
 

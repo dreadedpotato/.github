@@ -133,18 +133,44 @@ jobs:
                   return None
               fix = ", ".join(display) + " (a first name alone is fine)"
               return seats, fix
-          def is_base_sync_merge(sha, base_sha):
+          def merge_tree_write_tree_supported():
+              raw, err = git_out(["version"])
+              if raw is None:
+                  return False, err or "git version failed"
+              m = re.search(r"git version (\d+)\.(\d+)", raw)
+              if not m:
+                  return False, f"could not parse a git version from {raw.strip()!r}"
+              ver = (int(m.group(1)), int(m.group(2)))
+              if ver < (2, 38):
+                  return False, (
+                      f"git {ver[0]}.{ver[1]} does not support merge-tree --write-tree "
+                      f"(need 2.38 or later)"
+                  )
+              return True, ""
+          def base_sync_skip(sha, base_sha):
               raw, _err = git_out(["log", "-1", "--format=%P", sha])
               if raw is None:
-                  return False
+                  return "noskip", ""
               parents = raw.split()
-              if len(parents) < 2:
-                  return False
+              if len(parents) != 2:
+                  return "noskip", ""
               for parent in parents[1:]:
                   out, _err = git_out(["merge-base", "--is-ancestor", parent, base_sha])
                   if out is None:
-                      return False
-              return True
+                      return "noskip", ""
+              ok, why = merge_tree_write_tree_supported()
+              if not ok:
+                  return "unavailable", why
+              tree, terr = git_out(["merge-tree", "--write-tree", parents[0], parents[1]])
+              if tree is None:
+                  low = (terr or "").lower()
+                  if any(s in low for s in ("unknown option", "unknown switch", "not a git command")):
+                      return "unavailable", f"git merge-tree --write-tree is unavailable ({terr})"
+                  return "noskip", ""
+              actual, _err = git_out(["rev-parse", f"{sha}^{{tree}}"])
+              if actual is None or tree.strip() != actual.strip():
+                  return "noskip", ""
+              return "skip", ""
           def git_out(args):
               try:
                   proc = subprocess.run(["git", *args], capture_output=True, text=True)
@@ -351,7 +377,8 @@ jobs:
                                       f"{short}: committer email {committer!r} is not the allowed email {allowed!r}. "
                                       f"Fix: set the committer email on commit {short} to {allowed!r} and push the fix to this branch."
                                   )
-                              if is_base_sync_merge(sha, base):
+                              skip_state, skip_why = base_sync_skip(sha, base)
+                              if skip_state == "skip":
                                   continue
                               before = len(errs)
                               check_roles(message, f"commit {short}")
@@ -359,10 +386,18 @@ jobs:
                               if parent_line is not None and len(parent_line.split()) >= 2:
                                   hint = (
                                       " A merge that only brings in the base branch is exempt when its other "
-                                      "parents are already reachable from the base. If this merge is not that "
-                                      "shape, cherry-pick the feature commits onto a fresh branch off current "
-                                      "main instead of merging main in."
+                                      "parent is already reachable from the base and git merge-tree --write-tree "
+                                      "exits 0 with a tree that equals the merge commit. If this merge is not "
+                                      "that shape, cherry-pick the feature commits onto a fresh branch off "
+                                      "current main instead of merging main in."
                                   )
+                                  if skip_state == "unavailable":
+                                      hint = (
+                                          f" This merge was not exempted: {skip_why}. "
+                                          "Fix: use git 2.38 or later, or add Doer/Grader trailers on this "
+                                          "merge, or cherry-pick the feature commits onto a fresh branch off "
+                                          "current main."
+                                      )
                                   for i in range(before, len(errs)):
                                       if errs[i].startswith(f"commit {short} "):
                                           errs[i] = errs[i] + hint

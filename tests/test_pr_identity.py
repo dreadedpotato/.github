@@ -85,7 +85,7 @@ def git_stdout(repo, *args):
     return proc.stdout
 
 
-def git(repo, *args, author=ALLOWED, committer=ALLOWED):
+def git(repo, *args, author=ALLOWED, committer=ALLOWED, check=True):
     env = os.environ.copy()
     for key in list(env):
         if key.startswith("GIT_"):
@@ -94,7 +94,7 @@ def git(repo, *args, author=ALLOWED, committer=ALLOWED):
     env["GIT_COMMITTER_NAME"] = "Alpha"
     env["GIT_AUTHOR_EMAIL"] = author
     env["GIT_COMMITTER_EMAIL"] = committer
-    subprocess.run(
+    return subprocess.run(
         [
             "git",
             "-c",
@@ -107,10 +107,18 @@ def git(repo, *args, author=ALLOWED, committer=ALLOWED):
         ],
         cwd=repo,
         env=env,
-        check=True,
+        check=check,
         capture_output=True,
         text=True,
     )
+
+
+def write_files(repo, files):
+    for rel, content in files.items():
+        path = repo / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
+        git(repo, "add", rel)
 
 
 def head_sha(repo):
@@ -172,6 +180,9 @@ def run_identity(
             side_n += 1
             side = f"base-advance-{side_n}"
             git(repo, "checkout", "-b", side, base)
+            base_files = commit.get("base_files")
+            if base_files:
+                write_files(repo, base_files)
             git(
                 repo,
                 "commit",
@@ -183,16 +194,39 @@ def run_identity(
             )
             advanced = head_sha(repo)
             git(repo, "checkout", branch)
-            git(
-                repo,
-                "merge",
-                "--no-ff",
-                "-m",
-                commit["message"],
-                side,
-                author=author,
-                committer=committer,
-            )
+            extra = commit.get("extra_content")
+            resolved = commit.get("conflict_resolve")
+            if extra or resolved:
+                git(
+                    repo,
+                    "merge",
+                    "--no-ff",
+                    "--no-commit",
+                    side,
+                    author=author,
+                    committer=committer,
+                    check=False,
+                )
+                write_files(repo, extra or resolved)
+                git(
+                    repo,
+                    "commit",
+                    "-m",
+                    commit["message"],
+                    author=author,
+                    committer=committer,
+                )
+            else:
+                git(
+                    repo,
+                    "merge",
+                    "--no-ff",
+                    "-m",
+                    commit["message"],
+                    side,
+                    author=author,
+                    committer=committer,
+                )
             if commit.get("update_base", True):
                 base = advanced
         elif commit.get("merge"):
@@ -220,6 +254,9 @@ def run_identity(
                 committer=committer,
             )
         else:
+            files = commit.get("files")
+            if files:
+                write_files(repo, files)
             git(
                 repo,
                 "commit",
@@ -544,6 +581,45 @@ def test_base_sync_merge_without_trailers_passes(tmp_path, step_run):
     assert proc.returncode == 0, blob
     assert "PR identity ok" in proc.stdout
     assert "::error::" not in proc.stdout
+    parents = git_stdout(tmp_path / "repo", "log", "-1", "--format=%P", head).split()
+    assert len(parents) == 2
+
+
+def test_base_sync_merge_with_extra_content_fails(tmp_path, step_run):
+    proc, head = run_identity(
+        tmp_path,
+        step_run,
+        GOOD_BODY,
+        [
+            {"message": GOOD_MSG},
+            {
+                "sync_from_base": True,
+                "extra_content": {"evil.txt": "unique conflict resolution\n"},
+                "message": "Merge remote-tracking branch 'origin/main' into feature",
+            },
+        ],
+    )
+    assert_fail(proc, f"commit {head[:7]} needs a filled-in 'Doer:' line")
+    parents = git_stdout(tmp_path / "repo", "log", "-1", "--format=%P", head).split()
+    assert len(parents) == 2
+
+
+def test_conflicted_base_sync_merge_without_trailers_fails(tmp_path, step_run):
+    proc, head = run_identity(
+        tmp_path,
+        step_run,
+        GOOD_BODY,
+        [
+            {"message": GOOD_MSG, "files": {"conflict.txt": "feature\n"}},
+            {
+                "sync_from_base": True,
+                "base_files": {"conflict.txt": "main\n"},
+                "conflict_resolve": {"conflict.txt": "unique-resolution\n"},
+                "message": "Merge remote-tracking branch 'origin/main' into feature",
+            },
+        ],
+    )
+    assert_fail(proc, f"commit {head[:7]} needs a filled-in 'Doer:' line")
     parents = git_stdout(tmp_path / "repo", "log", "-1", "--format=%P", head).split()
     assert len(parents) == 2
 
