@@ -133,6 +133,18 @@ jobs:
                   return None
               fix = ", ".join(display) + " (a first name alone is fine)"
               return seats, fix
+          def is_base_sync_merge(sha, base_sha):
+              raw, _err = git_out(["log", "-1", "--format=%P", sha])
+              if raw is None:
+                  return False
+              parents = raw.split()
+              if len(parents) < 2:
+                  return False
+              for parent in parents[1:]:
+                  out, _err = git_out(["merge-base", "--is-ancestor", parent, base_sha])
+                  if out is None:
+                      return False
+              return True
           def git_out(args):
               try:
                   proc = subprocess.run(["git", *args], capture_output=True, text=True)
@@ -339,7 +351,21 @@ jobs:
                                       f"{short}: committer email {committer!r} is not the allowed email {allowed!r}. "
                                       f"Fix: set the committer email on commit {short} to {allowed!r} and push the fix to this branch."
                                   )
+                              if is_base_sync_merge(sha, base):
+                                  continue
+                              before = len(errs)
                               check_roles(message, f"commit {short}")
+                              parent_line, _err = git_out(["log", "-1", "--format=%P", sha])
+                              if parent_line is not None and len(parent_line.split()) >= 2:
+                                  hint = (
+                                      " A merge that only brings in the base branch is exempt when its other "
+                                      "parents are already reachable from the base. If this merge is not that "
+                                      "shape, cherry-pick the feature commits onto a fresh branch off current "
+                                      "main instead of merging main in."
+                                  )
+                                  for i in range(before, len(errs)):
+                                      if errs[i].startswith(f"commit {short} "):
+                                          errs[i] = errs[i] + hint
           for e in errs:
               print(f"::error::{e}")
           if errs:

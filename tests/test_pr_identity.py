@@ -168,7 +168,34 @@ def run_identity(
     for commit in commits:
         author = commit.get("author", ALLOWED)
         committer = commit.get("committer", ALLOWED)
-        if commit.get("merge"):
+        if commit.get("sync_from_base"):
+            side_n += 1
+            side = f"base-advance-{side_n}"
+            git(repo, "checkout", "-b", side, base)
+            git(
+                repo,
+                "commit",
+                "--allow-empty",
+                "-m",
+                commit.get("base_message", "advance base"),
+                author=author,
+                committer=committer,
+            )
+            advanced = head_sha(repo)
+            git(repo, "checkout", branch)
+            git(
+                repo,
+                "merge",
+                "--no-ff",
+                "-m",
+                commit["message"],
+                side,
+                author=author,
+                committer=committer,
+            )
+            if commit.get("update_base", True):
+                base = advanced
+        elif commit.get("merge"):
             side_n += 1
             side = f"side-{side_n}"
             git(repo, "checkout", "-b", side)
@@ -497,6 +524,28 @@ def test_merge_commit_without_trailers_fails(tmp_path, step_run):
     assert shas[-1] == head
     assert_fail(proc, f"commit {head[:7]} needs a filled-in 'Doer:' line")
     assert shas[-2][:7] not in proc.stdout
+    assert "cherry-pick the feature commits onto a fresh branch" in proc.stdout
+
+
+def test_base_sync_merge_without_trailers_passes(tmp_path, step_run):
+    proc, head = run_identity(
+        tmp_path,
+        step_run,
+        GOOD_BODY,
+        [
+            {"message": GOOD_MSG},
+            {
+                "sync_from_base": True,
+                "message": "Merge remote-tracking branch 'origin/main' into feature",
+            },
+        ],
+    )
+    blob = proc.stdout + proc.stderr
+    assert proc.returncode == 0, blob
+    assert "PR identity ok" in proc.stdout
+    assert "::error::" not in proc.stdout
+    parents = git_stdout(tmp_path / "repo", "log", "-1", "--format=%P", head).split()
+    assert len(parents) == 2
 
 
 def test_merge_commit_with_trailers_passes(tmp_path, step_run):
