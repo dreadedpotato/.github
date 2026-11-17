@@ -246,7 +246,7 @@ jobs:
           closing = re.search(
               r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b[^\S\n]*:?[^\S\n]*"
               r"(?:#\d+|GH-\d+|[\w.-]+/[\w.-]+#\d+|https?://github\.com/[\w.-]+/[\w.-]+/issues/\d+)",
-              raw_body,
+              raw_body + "\n" + re.sub(r"[*_`\[\]]", "", raw_body),
               re.I,
           )
           if closing:
