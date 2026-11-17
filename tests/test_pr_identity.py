@@ -11,6 +11,8 @@ STEP_NAME = (
     "different seats; allowed commit email)"
 )
 ALLOWED = "allowed@example.com"
+CALLER = "dreadedpotato/caller"
+ISSUE_LINE = f"Issue: https://github.com/{CALLER}/issues/3"
 OTHER = "other@example.com"
 SAME_PR = (
     "Fix it on this same PR: edit the PR body or push the fix to this branch. "
@@ -22,7 +24,7 @@ PROD_SELF_MERGE = (
 )
 GOOD_BODY = (
     "For Dread: identity check\n"
-    "Closes #3\n"
+    f"{ISSUE_LINE}\n"
     "\n"
     "Doer: Lyska\n"
     "Grader: Hester Quill\n"
@@ -144,7 +146,7 @@ def run_identity(
     event="pull_request",
     summary_path=None,
     seats_file=None,
-    github_repository=None,
+    github_repository=CALLER,
     local_seats=None,
     seats_url=None,
     readme="# Caller\nRepo tier: TEST\n",
@@ -342,7 +344,7 @@ def test_doer_equals_grader_fails(tmp_path, step_run, grader, where):
         ("", "PR body is empty"),
         ("   \n\t", "PR body is empty"),
         (
-            "Closes #3\n\nDoer: Alpha (seat one)\n",
+            f"{ISSUE_LINE}\n\nDoer: Alpha (seat one)\n",
             "PR body needs a filled-in 'Grader:' line",
         ),
     ],
@@ -461,7 +463,7 @@ def test_html_comment_extra_doer_is_ignored(tmp_path, step_run):
 
 
 def test_doer_only_inside_html_comment_fails(tmp_path, step_run):
-    body = "Closes #3\n\n<!--\nDoer: Alpha (seat one)\n-->\nGrader: Beta (seat two)\n"
+    body = f"{ISSUE_LINE}\n\n<!--\nDoer: Alpha (seat one)\n-->\nGrader: Beta (seat two)\n"
     proc, _head = run_identity(tmp_path, step_run, body, [{"message": GOOD_MSG}])
     assert_fail(proc, "PR body needs a filled-in 'Doer:' line")
 
@@ -475,7 +477,7 @@ def test_unclosed_comment_after_good_lines_passes(tmp_path, step_run):
 
 
 def test_unclosed_comment_before_doer_hides_it(tmp_path, step_run):
-    body = "Closes #3\n\nGrader: Beta (seat two)\n<!-- Doer: Alpha (seat one)"
+    body = f"{ISSUE_LINE}\n\nGrader: Beta (seat two)\n<!-- Doer: Alpha (seat one)"
     proc, _head = run_identity(tmp_path, step_run, body, [{"message": GOOD_MSG}])
     assert_fail(proc, "PR body needs a filled-in 'Doer:' line")
 
@@ -553,7 +555,7 @@ def test_missing_event_name_fails(tmp_path, step_run):
 
 
 def test_issue_link_inside_html_comment_does_not_count(tmp_path, step_run):
-    body = "<!-- Closes #3 -->\n" + GOOD_BODY.replace("Closes #3\n", "")
+    body = f"<!-- {ISSUE_LINE} -->\n" + GOOD_BODY.replace(f"{ISSUE_LINE}\n", "")
     proc, _head = run_identity(tmp_path, step_run, body, [{"message": GOOD_MSG}])
     assert_fail(proc, "PR body must link an issue")
 
@@ -561,7 +563,7 @@ def test_issue_link_inside_html_comment_does_not_count(tmp_path, step_run):
 def body_with_lines(count, first="For Dread: length check"):
     rows = [
         first,
-        "Closes #3",
+        ISSUE_LINE,
         "Doer: Lyska",
         "Grader: Hester Quill",
         "Problem: length",
@@ -780,7 +782,9 @@ def test_unreadable_or_empty_seats_file_fails(tmp_path, step_run, contents):
 
 def test_org_checkout_seats_used_when_fetch_fails(tmp_path, step_run):
     names = seat_lines() + ["Mira Sol"]
-    body = GOOD_BODY.replace("Grader: Hester Quill\n", "Grader: Mira Sol\n")
+    body = GOOD_BODY.replace("Grader: Hester Quill\n", "Grader: Mira Sol\n").replace(
+        CALLER, "dreadedpotato/.github"
+    )
     message = "Update template\n\nDoer: Lyska\nGrader: Mira Sol\n"
     proc, _head = run_identity(
         tmp_path,
@@ -927,3 +931,79 @@ def test_base_prod_head_test_readme_self_merge_fails(tmp_path, step_run):
         head_readme="Repo tier: TEST\n",
     )
     assert_fail(proc, PROD_SELF_MERGE)
+
+
+@pytest.mark.parametrize(
+    "link",
+    [
+        "Closes #3",
+        "closes #3",
+        "Closed #3",
+        "Close #3",
+        "Fixes #3",
+        "Fix #3",
+        "fixed #3",
+        "Resolves #3",
+        "Resolve #3",
+        "RESOLVED #3",
+        "Closes: #3",
+        "Closes:#3",
+        "Closes GH-3",
+        "Closes\u00a0#3",
+        "this fixes #3 too",
+        f"Fixes {CALLER}#3",
+        f"Resolves https://github.com/{CALLER}/issues/3",
+        "Fixes: https://github.com/example/other/issues/9",
+    ],
+)
+def test_closing_keyword_fails_even_with_issue_line(tmp_path, step_run, link):
+    body = GOOD_BODY.replace(f"{ISSUE_LINE}\n", f"{ISSUE_LINE}\n{link}\n")
+    proc, _head = run_identity(tmp_path, step_run, body, [{"message": GOOD_MSG}])
+    assert_fail(proc, "PR body uses the closing keyword")
+    assert f"Fix: delete the closing keyword and link the issue with the line '{ISSUE_LINE[:-1]}<n>'." in proc.stdout
+
+
+def test_closing_keyword_inside_html_comment_fails(tmp_path, step_run):
+    body = GOOD_BODY + "<!-- Closes #3 -->\n"
+    proc, _head = run_identity(tmp_path, step_run, body, [{"message": GOOD_MSG}])
+    assert_fail(proc, "PR body uses the closing keyword 'Closes #3'")
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "Closes #3",
+        "Part of #3",
+        "https://github.com/dreadedpotato/caller/issues/3",
+        "Issue: https://github.com/example/other/issues/3",
+        "Issue: https://github.com/dreadedpotato/caller/pull/3",
+        "Issue: #3",
+        "See Issue: https://github.com/dreadedpotato/caller/issues/3",
+    ],
+)
+def test_issue_line_must_be_same_repo_url(tmp_path, step_run, line):
+    body = GOOD_BODY.replace(f"{ISSUE_LINE}\n", f"{line}\n")
+    proc, _head = run_identity(tmp_path, step_run, body, [{"message": GOOD_MSG}])
+    assert_fail(proc, f"PR body must link an issue in {CALLER} by URL on its own line.")
+    assert f"Fix: add the line 'Issue: https://github.com/{CALLER}/issues/<n>'." in proc.stdout
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        ISSUE_LINE,
+        "issue: https://github.com/DreadedPotato/Caller/issues/3",
+        "Issue:https://github.com/dreadedpotato/caller/issues/3  ",
+    ],
+)
+def test_issue_url_line_passes(tmp_path, step_run, line):
+    body = GOOD_BODY.replace(f"{ISSUE_LINE}\n", f"{line}\nPart of dreadedpotato/.github#24\n")
+    proc, _head = run_identity(tmp_path, step_run, body, [{"message": GOOD_MSG}])
+    assert_pass(proc)
+
+
+def test_missing_github_repository_fails(tmp_path, step_run):
+    proc, _head = run_identity(
+        tmp_path, step_run, GOOD_BODY, [{"message": GOOD_MSG}], github_repository=None
+    )
+    assert_fail(proc, "GITHUB_REPOSITORY is empty")

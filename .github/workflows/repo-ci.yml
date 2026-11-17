@@ -240,13 +240,34 @@ jobs:
                   f"PR body has {len(lines)} non-blank lines, more than {BODY_MAX_LINES}. "
                   f"Fix: delete non-blank lines until {BODY_MAX_LINES} or fewer remain."
               )
-          issue = re.search(r"\b(close[sd]?|fix(e[sd])?|resolve[sd]?)\s+#\d+\b", body, re.I) or re.search(
-              r"https://github\.com/[\w.-]+/[\w.-]+/issues/\d+", body
+          repo_name = (os.environ.get("GITHUB_REPOSITORY") or "").strip()
+          issue_fix = f"Issue: https://github.com/{repo_name or '<owner>/<repo>'}/issues/<n>"
+          raw_body = (os.environ.get("PR_BODY") or "").replace("\r", "")
+          closing = re.search(
+              r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b[^\S\n]*:?[^\S\n]*"
+              r"(?:#\d+|GH-\d+|[\w.-]+/[\w.-]+#\d+|https?://github\.com/[\w.-]+/[\w.-]+/issues/\d+)",
+              raw_body,
+              re.I,
           )
-          if not issue:
+          if closing:
               errs.append(
-                  "PR body must link an issue: 'Closes #<n>', 'Fixes #<n>', or an issue URL. "
-                  "Fix: add 'Closes #<n>', 'Fixes #<n>', or a full GitHub issue URL."
+                  f"PR body uses the closing keyword {closing.group(0)!r}, so GitHub would close the issue on merge "
+                  "before it is validated. "
+                  f"Fix: delete the closing keyword and link the issue with the line '{issue_fix}'."
+              )
+          if not repo_name:
+              errs.append(
+                  "GITHUB_REPOSITORY is empty, so the issue link cannot be matched to this repo. "
+                  "Fix: run this check from a pull_request workflow, where GitHub sets GITHUB_REPOSITORY."
+              )
+          elif not re.search(
+              r"^[ \t]*Issue[ \t]*:[ \t]*https://github\.com/" + re.escape(repo_name) + r"/issues/\d+[ \t]*$",
+              body,
+              re.I | re.M,
+          ):
+              errs.append(
+                  f"PR body must link an issue in {repo_name} by URL on its own line. "
+                  f"Fix: add the line '{issue_fix}'."
               )
           tested_vals = re.findall(r"^[ \t]*Tested[ \t]*:[ \t]*(.*?)[ \t]*$", body, re.I | re.M)
           if not any(v.strip() for v in tested_vals):
