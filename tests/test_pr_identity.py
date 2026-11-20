@@ -1138,3 +1138,25 @@ def test_missing_github_repository_fails(tmp_path, step_run):
         tmp_path, step_run, GOOD_BODY, [{"message": GOOD_MSG}], github_repository=None
     )
     assert_fail(proc, "GITHUB_REPOSITORY is empty")
+
+
+def test_subject_grader_with_real_trailers_passes(tmp_path, step_run):
+    message = "Grader: x\n\nDoer: Lyska\nGrader: Hester Quill\n"
+    proc, _head = run_identity(tmp_path, step_run, GOOD_BODY, [{"message": message}])
+    assert_pass(proc)
+
+
+def test_two_grader_trailers_still_fail(tmp_path, step_run):
+    message = "Grader: x\n\nDoer: Lyska\nGrader: Hester Quill\nGrader: Ines\n"
+    proc, head = run_identity(tmp_path, step_run, GOOD_BODY, [{"message": message}])
+    assert_fail(proc, f"commit {head[:7]} must have exactly one 'Grader:' line (found 2)")
+    assert "found 3" not in proc.stdout
+
+
+def test_roles_only_in_subject_fail_missing(tmp_path, step_run):
+    message = "Doer: Lyska\nGrader: Hester Quill\n"
+    proc, head = run_identity(tmp_path, step_run, GOOD_BODY, [{"message": message}])
+    short = head[:7]
+    assert_fail(proc, f"commit {short} needs a filled-in 'Doer:' line")
+    assert f"commit {short} needs a filled-in 'Grader:' line" in proc.stdout
+    assert "must be a trailer in the last paragraph of the commit message." in proc.stdout
