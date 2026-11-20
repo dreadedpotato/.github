@@ -196,22 +196,37 @@ jobs:
           def check_roles(text, label):
               def note(msg):
                   errs.append(f"{label} {msg}" if label else msg)
+              def role_line(msg):
+                  if label.startswith("commit "):
+                      return (
+                          msg
+                          + " The line must be a trailer in the last paragraph of the commit message."
+                      )
+                  return msg
               text = text.replace("\r", "")
               accepted = {}
               for name in ("Doer", "Grader"):
                   ms = re.findall(rf"^[ \t]*{name}[ \t]*:[ \t]*(.*?)[ \t]*$", text, re.I | re.M)
                   if len(ms) > 1:
                       note(
-                          f"must have exactly one '{name}:' line (found {len(ms)}). "
-                          f"Fix: leave exactly one '{name}:' line."
+                          role_line(
+                              f"must have exactly one '{name}:' line (found {len(ms)}). "
+                              f"Fix: leave exactly one '{name}:' line."
+                          )
                       )
                   elif len(ms) == 0 or not ms[0].strip():
                       if name == "Doer":
-                          note("needs a filled-in 'Doer:' line. Fix: add one line 'Doer: <current seat>'.")
+                          note(
+                              role_line(
+                                  "needs a filled-in 'Doer:' line. Fix: add one line 'Doer: <current seat>'."
+                              )
+                          )
                       else:
                           note(
-                              "needs a filled-in 'Grader:' line. "
-                              "Fix: add one line 'Grader: <current seat or self-merge>'."
+                              role_line(
+                                  "needs a filled-in 'Grader:' line. "
+                                  "Fix: add one line 'Grader: <current seat or self-merge>'."
+                              )
                           )
                   else:
                       accepted[name] = ms[0].strip()
@@ -366,7 +381,6 @@ jobs:
                           else:
                               author = parts[0].strip()
                               committer = parts[1].strip()
-                              message = parts[2]
                               if author.lower() != allowed.lower():
                                   errs.append(
                                       f"{short}: author email {author!r} is not the allowed email {allowed!r}. "
@@ -380,8 +394,22 @@ jobs:
                               skip_state, skip_why = base_sync_skip(sha, base)
                               if skip_state == "skip":
                                   continue
+                              roles, rerr = git_out(
+                                  [
+                                      "log",
+                                      "-1",
+                                      "--format=%(trailers:key=Doer)%(trailers:key=Grader)",
+                                      sha,
+                                  ]
+                              )
                               before = len(errs)
-                              check_roles(message, f"commit {short}")
+                              if roles is None:
+                                  errs.append(
+                                      f"{short}: git log failed: {rerr}. "
+                                      f"Fix: make commit {short} readable with git log and push the fix to this branch."
+                                  )
+                              else:
+                                  check_roles(roles, f"commit {short}")
                               parent_line, _err = git_out(["log", "-1", "--format=%P", sha])
                               if parent_line is not None and len(parent_line.split()) >= 2:
                                   hint = (
