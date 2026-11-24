@@ -7,8 +7,8 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 STEP_NAME = (
-    "PR identity (linked issue; body and every commit: one Doer, one Grader, "
-    "different seats; allowed commit email)"
+    "PR identity (linked issue; body: one Doer, one Grader, different seats; "
+    "allowed commit author email)"
 )
 ALLOWED = "allowed@example.com"
 CALLER = "dreadedpotato/caller"
@@ -20,7 +20,7 @@ SAME_PR = (
 )
 PROD_SELF_MERGE = (
     "Grader: self-merge is not allowed on a PROD repo (README says Repo tier: PROD). "
-    "Fix: set Grader: Hester Quill (a named current seat) in the PR body and the commit trailers."
+    "Fix: set Grader: Hester Quill (a named current seat) in the PR body."
 )
 GOOD_BODY = (
     "For Dread: identity check\n"
@@ -63,7 +63,6 @@ def step_run():
     assert step["env"]["PR_BODY"] == "${{ github.event.pull_request.body }}"
     assert step["env"]["BASE_SHA"] == "${{ github.event.pull_request.base.sha }}"
     assert step["env"]["HEAD_SHA"] == "${{ github.event.pull_request.head.sha }}"
-    assert step["env"]["HEAD_REF"] == "${{ github.event.pull_request.head.ref }}"
     assert step["env"]["ALLOWED_EMAIL"] == "${{ inputs.allowed-email || vars.CI_ALLOWED_EMAIL }}"
     assert step["env"]["EVENT_NAME"] == "${{ github.event_name }}"
     assert "continue-on-error" not in step
@@ -114,21 +113,11 @@ def git(repo, *args, author=ALLOWED, committer=ALLOWED, check=True):
     )
 
 
-def write_files(repo, files):
-    for rel, content in files.items():
-        path = repo / rel
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content)
-        git(repo, "add", rel)
-
-
 def head_sha(repo):
     return git_stdout(repo, "rev-parse", "HEAD").strip()
 
 
-def placed(where, bad):
-    if where == "commit":
-        return GOOD_BODY, f"Update template\n\n{bad}"
+def placed(bad):
     body = GOOD_BODY.replace("Doer: Lyska\nGrader: Hester Quill\n", bad)
     return body, GOOD_MSG
 
@@ -161,7 +150,6 @@ def run_identity(
     readme="# Caller\nRepo tier: TEST\n",
     readme_name="README.md",
     head_readme=None,
-    head_ref="feature/x",
 ):
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -173,106 +161,18 @@ def run_identity(
     else:
         git(repo, "commit", "--allow-empty", "-m", "base")
     base = head_sha(repo)
-    branch = git_stdout(repo, "rev-parse", "--abbrev-ref", "HEAD").strip()
-    side_n = 0
-    legacy_sha = ""
     for commit in commits:
         author = commit.get("author", ALLOWED)
         committer = commit.get("committer", ALLOWED)
-        if commit.get("sync_from_base"):
-            side_n += 1
-            side = f"base-advance-{side_n}"
-            git(repo, "checkout", "-b", side, base)
-            base_files = commit.get("base_files")
-            if base_files:
-                write_files(repo, base_files)
-            git(
-                repo,
-                "commit",
-                "--allow-empty",
-                "-m",
-                commit.get("base_message", "advance base"),
-                author=author,
-                committer=committer,
-            )
-            advanced = head_sha(repo)
-            git(repo, "checkout", branch)
-            extra = commit.get("extra_content")
-            resolved = commit.get("conflict_resolve")
-            if extra or resolved:
-                git(
-                    repo,
-                    "merge",
-                    "--no-ff",
-                    "--no-commit",
-                    side,
-                    author=author,
-                    committer=committer,
-                    check=False,
-                )
-                write_files(repo, extra or resolved)
-                git(
-                    repo,
-                    "commit",
-                    "-m",
-                    commit["message"],
-                    author=author,
-                    committer=committer,
-                )
-            else:
-                git(
-                    repo,
-                    "merge",
-                    "--no-ff",
-                    "-m",
-                    commit["message"],
-                    side,
-                    author=author,
-                    committer=committer,
-                )
-            if commit.get("update_base", True):
-                base = advanced
-        elif commit.get("merge"):
-            side_n += 1
-            side = f"side-{side_n}"
-            git(repo, "checkout", "-b", side)
-            git(
-                repo,
-                "commit",
-                "--allow-empty",
-                "-m",
-                commit.get("side_message", GOOD_MSG),
-                author=author,
-                committer=committer,
-            )
-            git(repo, "checkout", branch)
-            git(
-                repo,
-                "merge",
-                "--no-ff",
-                "-m",
-                commit["message"],
-                side,
-                author=author,
-                committer=committer,
-            )
-        else:
-            files = commit.get("files")
-            if files:
-                write_files(repo, files)
-            git(
-                repo,
-                "commit",
-                "--allow-empty",
-                "-m",
-                commit["message"],
-                author=author,
-                committer=committer,
-            )
-        if commit.get("legacy"):
-            legacy_sha = head_sha(repo)
-    if legacy_sha:
-        body = body.replace("LEGACY_SHA", legacy_sha)
+        git(
+            repo,
+            "commit",
+            "--allow-empty",
+            "-m",
+            commit["message"],
+            author=author,
+            committer=committer,
+        )
     if head_readme is not None:
         (repo / readme_name).write_text(head_readme)
         git(repo, "add", readme_name)
@@ -290,7 +190,6 @@ def run_identity(
     env["PR_BODY"] = body
     env["BASE_SHA"] = base
     env["HEAD_SHA"] = head
-    env["HEAD_REF"] = head_ref
     if allowed is None:
         env.pop("ALLOWED_EMAIL", None)
     else:
@@ -375,21 +274,27 @@ def test_bad_committer_email_fails(tmp_path, step_run):
     assert "author email" not in proc.stdout
 
 
-def test_missing_doer_fails(tmp_path, step_run):
-    message = "Update template\n\nGrader: Hester Quill\n"
-    proc, head = run_identity(tmp_path, step_run, GOOD_BODY, [{"message": message}])
-    assert_fail(proc, f"commit {head[:7]} needs a filled-in 'Doer:' line")
-
-
-def test_two_grader_lines_fails(tmp_path, step_run):
-    message = (
-        "Update template\n\n"
-        "Doer: Lyska\n"
-        "Grader: Hester Quill\n"
-        "Grader: Ines\n"
+def test_web_flow_committer_email(tmp_path, step_run):
+    web = "noreply@github.com"
+    passed = tmp_path / "passed"
+    failed = tmp_path / "failed"
+    passed.mkdir()
+    failed.mkdir()
+    proc, _head = run_identity(
+        passed,
+        step_run,
+        GOOD_BODY,
+        [{"message": GOOD_MSG, "author": ALLOWED, "committer": web}],
     )
-    proc, head = run_identity(tmp_path, step_run, GOOD_BODY, [{"message": message}])
-    assert_fail(proc, f"commit {head[:7]} must have exactly one 'Grader:' line (found 2)")
+    assert_pass(proc)
+    proc, head = run_identity(
+        failed,
+        step_run,
+        GOOD_BODY,
+        [{"message": GOOD_MSG, "author": OTHER, "committer": web}],
+    )
+    assert_fail(proc, f"{head[:7]}: author email {OTHER!r} is not the allowed email {ALLOWED!r}")
+    assert "committer email" not in proc.stdout
 
 
 @pytest.mark.parametrize(
@@ -400,14 +305,11 @@ def test_two_grader_lines_fails(tmp_path, step_run):
         "  alpha (seat one)  ",
     ],
 )
-@pytest.mark.parametrize("where", ["commit", "body"])
-def test_doer_equals_grader_fails(tmp_path, step_run, grader, where):
+def test_doer_equals_grader_fails(tmp_path, step_run, grader):
     bad = f"Doer: Alpha (seat one)\nGrader: {grader}\n"
-    body, message = placed(where, bad)
-    proc, head = run_identity(tmp_path, step_run, body, [{"message": message}])
+    body, message = placed(bad)
+    proc, _head = run_identity(tmp_path, step_run, body, [{"message": message}])
     assert_fail(proc, "Doer and Grader name the same seat")
-    if where == "commit":
-        assert f"commit {head[:7]}" in proc.stdout
 
 
 @pytest.mark.parametrize(
@@ -476,54 +378,18 @@ def test_repo_ci_yml_has_no_hardcoded_identity():
         "ALPHA  (seat   one)",
     ],
 )
-@pytest.mark.parametrize("where", ["commit", "body"])
-def test_normalized_grader_is_same_seat(tmp_path, step_run, grader, where):
+def test_normalized_grader_is_same_seat(tmp_path, step_run, grader):
     bad = f"Doer: Alpha (seat one)\nGrader: {grader}\n"
-    body, message = placed(where, bad)
-    proc, head = run_identity(tmp_path, step_run, body, [{"message": message}])
-    if where == "commit":
-        label = f"commit {head[:7]}"
-    else:
-        label = "PR body"
-    assert_fail(proc, f"{label} Doer and Grader name the same seat")
+    body, message = placed(bad)
+    proc, _head = run_identity(tmp_path, step_run, body, [{"message": message}])
+    assert_fail(proc, "PR body Doer and Grader name the same seat")
 
 
-@pytest.mark.parametrize("where", ["commit", "body"])
-def test_empty_grader_value_fails(tmp_path, step_run, where):
+def test_empty_grader_value_fails(tmp_path, step_run):
     bad = "Doer: Alpha (seat one)\nGrader:\n"
-    body, message = placed(where, bad)
-    proc, head = run_identity(tmp_path, step_run, body, [{"message": message}])
-    if where == "commit":
-        label = f"commit {head[:7]}"
-    else:
-        label = "PR body"
-    assert_fail(proc, f"{label} needs a filled-in 'Grader:' line")
-
-
-def test_lowercase_doer_key_passes(tmp_path, step_run):
-    message = "Update template\n\ndoer: Lyska\nGrader: Hester Quill\n"
-    proc, _head = run_identity(tmp_path, step_run, GOOD_BODY, [{"message": message}])
-    blob = proc.stdout + proc.stderr
-    assert proc.returncode == 0, blob
-    assert "PR identity ok" in proc.stdout
-    assert "::error::" not in proc.stdout
-
-
-def test_duplicate_doer_key_ignores_case(tmp_path, step_run):
-    message = (
-        "Update template\n\n"
-        "Doer: Lyska\n"
-        "doer: Hester Quill\n"
-        "Grader: Ines\n"
-    )
-    proc, head = run_identity(tmp_path, step_run, GOOD_BODY, [{"message": message}])
-    assert_fail(proc, f"commit {head[:7]} must have exactly one 'Doer:' line (found 2)")
-
-
-def test_midline_doer_does_not_count(tmp_path, step_run):
-    message = "Note: see Doer: Lyska\nGrader: Hester Quill\n"
-    proc, head = run_identity(tmp_path, step_run, GOOD_BODY, [{"message": message}])
-    assert_fail(proc, f"commit {head[:7]} needs a filled-in 'Doer:' line")
+    body, message = placed(bad)
+    proc, _head = run_identity(tmp_path, step_run, body, [{"message": message}])
+    assert_fail(proc, "PR body needs a filled-in 'Grader:' line")
 
 
 def test_html_comment_extra_doer_is_ignored(tmp_path, step_run):
@@ -552,97 +418,6 @@ def test_unclosed_comment_before_doer_hides_it(tmp_path, step_run):
     body = f"{ISSUE_LINE}\n\nGrader: Beta (seat two)\n<!-- Doer: Alpha (seat one)"
     proc, _head = run_identity(tmp_path, step_run, body, [{"message": GOOD_MSG}])
     assert_fail(proc, "PR body needs a filled-in 'Doer:' line")
-
-
-def test_merge_commit_without_trailers_fails(tmp_path, step_run):
-    proc, head = run_identity(
-        tmp_path,
-        step_run,
-        GOOD_BODY,
-        [{"merge": True, "message": "Merge branch 'main' into feature"}],
-    )
-    shas = [
-        line.strip()
-        for line in git_stdout(tmp_path / "repo", "rev-list", "--reverse", "HEAD").splitlines()
-        if line.strip()
-    ]
-    assert shas[-1] == head
-    assert_fail(proc, f"commit {head[:7]} needs a filled-in 'Doer:' line")
-    assert shas[-2][:7] not in proc.stdout
-    assert "cherry-pick the feature commits onto a fresh branch" in proc.stdout
-
-
-def test_base_sync_merge_without_trailers_passes(tmp_path, step_run):
-    proc, head = run_identity(
-        tmp_path,
-        step_run,
-        GOOD_BODY,
-        [
-            {"message": GOOD_MSG},
-            {
-                "sync_from_base": True,
-                "message": "Merge remote-tracking branch 'origin/main' into feature",
-            },
-        ],
-    )
-    blob = proc.stdout + proc.stderr
-    assert proc.returncode == 0, blob
-    assert "PR identity ok" in proc.stdout
-    assert "::error::" not in proc.stdout
-    parents = git_stdout(tmp_path / "repo", "log", "-1", "--format=%P", head).split()
-    assert len(parents) == 2
-
-
-def test_base_sync_merge_with_extra_content_fails(tmp_path, step_run):
-    proc, head = run_identity(
-        tmp_path,
-        step_run,
-        GOOD_BODY,
-        [
-            {"message": GOOD_MSG},
-            {
-                "sync_from_base": True,
-                "extra_content": {"evil.txt": "unique conflict resolution\n"},
-                "message": "Merge remote-tracking branch 'origin/main' into feature",
-            },
-        ],
-    )
-    assert_fail(proc, f"commit {head[:7]} needs a filled-in 'Doer:' line")
-    parents = git_stdout(tmp_path / "repo", "log", "-1", "--format=%P", head).split()
-    assert len(parents) == 2
-
-
-def test_conflicted_base_sync_merge_without_trailers_fails(tmp_path, step_run):
-    proc, head = run_identity(
-        tmp_path,
-        step_run,
-        GOOD_BODY,
-        [
-            {"message": GOOD_MSG, "files": {"conflict.txt": "feature\n"}},
-            {
-                "sync_from_base": True,
-                "base_files": {"conflict.txt": "main\n"},
-                "conflict_resolve": {"conflict.txt": "unique-resolution\n"},
-                "message": "Merge remote-tracking branch 'origin/main' into feature",
-            },
-        ],
-    )
-    assert_fail(proc, f"commit {head[:7]} needs a filled-in 'Doer:' line")
-    parents = git_stdout(tmp_path / "repo", "log", "-1", "--format=%P", head).split()
-    assert len(parents) == 2
-
-
-def test_merge_commit_with_trailers_passes(tmp_path, step_run):
-    proc, _head = run_identity(
-        tmp_path,
-        step_run,
-        GOOD_BODY,
-        [{"merge": True, "message": GOOD_MSG}],
-    )
-    blob = proc.stdout + proc.stderr
-    assert proc.returncode == 0, blob
-    assert "PR identity ok" in proc.stdout
-    assert "::error::" not in proc.stdout
 
 
 def test_push_event_skips(tmp_path, step_run):
@@ -721,28 +496,21 @@ def assert_pass(proc):
     assert SAME_PR not in proc.stdout
 
 
-@pytest.mark.parametrize("where", ["body", "commit"])
 @pytest.mark.parametrize("grader", ["self-merge", "Self-Merge", "SELF-MERGE", "self-merge (no grade)"])
-def test_self_merge_grader_passes(tmp_path, step_run, where, grader):
-    if where == "body":
-        body = GOOD_BODY.replace("Grader: Hester Quill\n", f"Grader: {grader}\n")
-        message = GOOD_MSG
-    else:
-        body = GOOD_BODY
-        message = f"Update template\n\nDoer: Lyska\nGrader: {grader}\n"
-    proc, _head = run_identity(tmp_path, step_run, body, [{"message": message}])
+def test_self_merge_grader_passes(tmp_path, step_run, grader):
+    body = GOOD_BODY.replace("Grader: Hester Quill\n", f"Grader: {grader}\n")
+    proc, _head = run_identity(tmp_path, step_run, body, [{"message": GOOD_MSG}])
     assert_pass(proc)
 
 
 @pytest.mark.parametrize("name", ["Rei", "Priya", "Lyska Embervane"])
-@pytest.mark.parametrize("where", ["body", "commit"])
 @pytest.mark.parametrize("role", ["Doer", "Grader"])
-def test_retired_names_fail(tmp_path, step_run, name, where, role):
+def test_retired_names_fail(tmp_path, step_run, name, role):
     if role == "Doer":
         bad = f"Doer: {name}\nGrader: Hester Quill\n"
     else:
         bad = f"Doer: Lyska\nGrader: {name}\n"
-    body, message = placed(where, bad)
+    body, message = placed(bad)
     proc, _head = run_identity(tmp_path, step_run, body, [{"message": message}])
     assert_fail(proc, f"{role} value {name!r} is not a current seat")
 
@@ -835,19 +603,16 @@ def test_parenthetical_seat_passes(tmp_path, step_run):
     assert_pass(proc)
 
 
-@pytest.mark.parametrize("where", ["body", "commit"])
-def test_same_current_seat_fails(tmp_path, step_run, where):
+def test_same_current_seat_fails(tmp_path, step_run):
     bad = "Doer: Lyska\nGrader: lyska\n"
-    body, message = placed(where, bad)
-    proc, head = run_identity(tmp_path, step_run, body, [{"message": message}])
+    body, message = placed(bad)
+    proc, _head = run_identity(tmp_path, step_run, body, [{"message": message}])
     assert_fail(proc, "Doer and Grader name the same seat")
-    if where == "commit":
-        assert f"commit {head[:7]}" in proc.stdout
 
 
 def test_doer_self_merge_fails(tmp_path, step_run):
     bad = "Doer: self-merge\nGrader: self-merge\n"
-    body, message = placed("body", bad)
+    body, message = placed(bad)
     proc, _head = run_identity(tmp_path, step_run, body, [{"message": message}])
     assert_fail(proc, "Doer value 'self-merge' is not a current seat")
     assert "Doer and Grader name the same seat" not in proc.stdout
@@ -972,31 +737,13 @@ def test_prod_readme_body_self_merge_fails(tmp_path, step_run, readme_name):
     assert_fail(proc, PROD_SELF_MERGE)
 
 
-def test_prod_readme_commit_self_merge_fails(tmp_path, step_run):
-    message = "Update template\n\nDoer: Lyska\nGrader: self-merge\n"
-    proc, _head = run_identity(
-        tmp_path,
-        step_run,
-        GOOD_BODY,
-        [{"message": message}],
-        readme="Repo tier: PROD\n",
-    )
-    assert_fail(proc, PROD_SELF_MERGE)
-
-
-@pytest.mark.parametrize("where", ["body", "commit"])
-def test_test_readme_self_merge_passes(tmp_path, step_run, where):
-    if where == "body":
-        body = GOOD_BODY.replace("Grader: Hester Quill\n", "Grader: self-merge\n")
-        message = GOOD_MSG
-    else:
-        body = GOOD_BODY
-        message = "Update template\n\nDoer: Lyska\nGrader: self-merge\n"
+def test_test_readme_self_merge_passes(tmp_path, step_run):
+    body = GOOD_BODY.replace("Grader: Hester Quill\n", "Grader: self-merge\n")
     proc, _head = run_identity(
         tmp_path,
         step_run,
         body,
-        [{"message": message}],
+        [{"message": GOOD_MSG}],
         readme="Repo tier: TEST\n",
     )
     assert_pass(proc)
@@ -1037,19 +784,13 @@ def test_missing_readme_self_merge_fails(tmp_path, step_run):
     assert_fail(proc, PROD_SELF_MERGE)
 
 
-@pytest.mark.parametrize("where", ["body", "commit"])
-def test_missing_tier_line_self_merge_fails(tmp_path, step_run, where):
-    if where == "body":
-        body = GOOD_BODY.replace("Grader: Hester Quill\n", "Grader: self-merge\n")
-        message = GOOD_MSG
-    else:
-        body = GOOD_BODY
-        message = "Update template\n\nDoer: Lyska\nGrader: self-merge\n"
+def test_missing_tier_line_self_merge_fails(tmp_path, step_run):
+    body = GOOD_BODY.replace("Grader: Hester Quill\n", "Grader: self-merge\n")
     proc, _head = run_identity(
         tmp_path,
         step_run,
         body,
-        [{"message": message}],
+        [{"message": GOOD_MSG}],
         readme="# Caller\n",
     )
     assert_fail(proc, PROD_SELF_MERGE)
@@ -1146,141 +887,3 @@ def test_missing_github_repository_fails(tmp_path, step_run):
         tmp_path, step_run, GOOD_BODY, [{"message": GOOD_MSG}], github_repository=None
     )
     assert_fail(proc, "GITHUB_REPOSITORY is empty")
-
-
-def test_subject_grader_with_real_trailers_passes(tmp_path, step_run):
-    message = "Grader: x\n\nDoer: Lyska\nGrader: Hester Quill\n"
-    proc, _head = run_identity(tmp_path, step_run, GOOD_BODY, [{"message": message}])
-    assert_pass(proc)
-
-
-def test_two_grader_trailers_still_fail(tmp_path, step_run):
-    message = "Grader: x\n\nDoer: Lyska\nGrader: Hester Quill\nGrader: Ines\n"
-    proc, head = run_identity(tmp_path, step_run, GOOD_BODY, [{"message": message}])
-    assert_fail(proc, f"commit {head[:7]} must have exactly one 'Grader:' line (found 2)")
-    assert "found 3" not in proc.stdout
-
-
-def test_roles_only_in_subject_fail_missing(tmp_path, step_run):
-    message = "Doer: Lyska\nGrader: Hester Quill\n"
-    proc, head = run_identity(tmp_path, step_run, GOOD_BODY, [{"message": message}])
-    short = head[:7]
-    assert_fail(proc, f"commit {short} needs a filled-in 'Doer:' line")
-    assert f"commit {short} needs a filled-in 'Grader:' line" in proc.stdout
-    assert "must be a trailer in the last paragraph of the commit message." in proc.stdout
-
-
-def test_legacy_through_later_commit_missing_doer_fails(tmp_path, step_run):
-    body = GOOD_BODY + "Legacy through: LEGACY_SHA\n"
-    proc, head = run_identity(
-        tmp_path,
-        step_run,
-        body,
-        [
-            {"message": "graded\n", "committer": OTHER, "legacy": True},
-            {"message": "later work\n"},
-        ],
-        head_ref="poc/demo",
-    )
-    assert_fail(proc, f"commit {head[:7]} needs a filled-in 'Doer:' line")
-
-
-def test_legacy_through_later_commit_bad_author_email_fails(tmp_path, step_run):
-    body = GOOD_BODY + "Legacy through: LEGACY_SHA\n"
-    proc, head = run_identity(
-        tmp_path,
-        step_run,
-        body,
-        [
-            {"message": "graded\n", "committer": OTHER, "legacy": True},
-            {"message": GOOD_MSG, "author": OTHER},
-        ],
-        head_ref="poc/demo",
-    )
-    assert_fail(proc, f"{head[:7]}: author email {OTHER!r} is not the allowed email {ALLOWED!r}")
-
-
-def test_legacy_through_non_poc_head_skips_nothing(tmp_path, step_run):
-    body = GOOD_BODY + "Legacy through: LEGACY_SHA\n"
-    proc, head = run_identity(
-        tmp_path,
-        step_run,
-        body,
-        [{"message": "graded\n", "committer": OTHER, "legacy": True}],
-        head_ref="feature/x",
-    )
-    assert_fail(
-        proc,
-        "'Legacy through:' is only allowed on a PR whose head branch matches poc/* "
-        "(this head is 'feature/x'). "
-        "Fix: delete the 'Legacy through:' line, or open the PR from a poc/* branch.",
-    )
-    assert f"{head[:7]}: committer email {OTHER!r} is not the allowed email {ALLOWED!r}" in proc.stdout
-
-
-def test_legacy_through_sha_not_ancestor_fails(tmp_path, step_run):
-    missing = "0123456789abcdef0123456789abcdef01234567"
-    body = GOOD_BODY + f"Legacy through: {missing}\n"
-    proc, _head = run_identity(
-        tmp_path,
-        step_run,
-        body,
-        [{"message": GOOD_MSG}],
-        head_ref="poc/demo",
-    )
-    assert_fail(proc, "Fix: name a commit already on this branch.")
-    assert missing in proc.stdout
-
-
-def test_two_legacy_through_lines_fail(tmp_path, step_run):
-    body = (
-        GOOD_BODY
-        + "Legacy through: 0123456789abcdef0123456789abcdef01234567\n"
-        + "legacy through: abcdefabcdefabcdefabcdefabcdefabcdefabcd\n"
-    )
-    proc, _head = run_identity(
-        tmp_path,
-        step_run,
-        body,
-        [{"message": GOOD_MSG}],
-        head_ref="poc/demo",
-    )
-    assert_fail(
-        proc,
-        "PR body has 2 'Legacy through:' lines. "
-        "Fix: leave exactly one line 'Legacy through: <40-hex sha>'.",
-    )
-
-
-def test_legacy_through_skips_graded_history(tmp_path, step_run):
-    body = GOOD_BODY + "Legacy through: LEGACY_SHA\n"
-    proc, _head = run_identity(
-        tmp_path,
-        step_run,
-        body,
-        [
-            {"message": "old web merge\n", "committer": OTHER},
-            {"message": "Doer: Rei\n", "committer": OTHER, "legacy": True},
-            {"message": GOOD_MSG},
-        ],
-        head_ref="poc/demo",
-    )
-    assert_pass(proc)
-    assert (
-        "skipped the per-commit identity and email checks on 2 commits "
-        "already graded on this POC branch; every later commit is still checked."
-    ) in proc.stdout
-    assert "::notice::Legacy through " in proc.stdout
-
-
-def test_legacy_through_malformed_value_fails(tmp_path, step_run):
-    body = GOOD_BODY + "Legacy through: not-a-sha\n"
-    proc, _head = run_identity(
-        tmp_path,
-        step_run,
-        body,
-        [{"message": GOOD_MSG}],
-        head_ref="poc/demo",
-    )
-    assert_fail(proc, "Fix: set the line to 'Legacy through: <40-hex sha>'.")
-    assert "not-a-sha" in proc.stdout
