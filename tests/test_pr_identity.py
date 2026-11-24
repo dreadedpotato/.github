@@ -63,6 +63,7 @@ def step_run():
     assert step["env"]["PR_BODY"] == "${{ github.event.pull_request.body }}"
     assert step["env"]["BASE_SHA"] == "${{ github.event.pull_request.base.sha }}"
     assert step["env"]["HEAD_SHA"] == "${{ github.event.pull_request.head.sha }}"
+    assert step["env"]["HEAD_REF"] == "${{ github.event.pull_request.head.ref }}"
     assert step["env"]["ALLOWED_EMAIL"] == "${{ inputs.allowed-email || vars.CI_ALLOWED_EMAIL }}"
     assert step["env"]["EVENT_NAME"] == "${{ github.event_name }}"
     assert "continue-on-error" not in step
@@ -160,6 +161,7 @@ def run_identity(
     readme="# Caller\nRepo tier: TEST\n",
     readme_name="README.md",
     head_readme=None,
+    head_ref="feature/x",
 ):
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -173,6 +175,7 @@ def run_identity(
     base = head_sha(repo)
     branch = git_stdout(repo, "rev-parse", "--abbrev-ref", "HEAD").strip()
     side_n = 0
+    legacy_sha = ""
     for commit in commits:
         author = commit.get("author", ALLOWED)
         committer = commit.get("committer", ALLOWED)
@@ -266,6 +269,10 @@ def run_identity(
                 author=author,
                 committer=committer,
             )
+        if commit.get("legacy"):
+            legacy_sha = head_sha(repo)
+    if legacy_sha:
+        body = body.replace("LEGACY_SHA", legacy_sha)
     if head_readme is not None:
         (repo / readme_name).write_text(head_readme)
         git(repo, "add", readme_name)
@@ -283,6 +290,7 @@ def run_identity(
     env["PR_BODY"] = body
     env["BASE_SHA"] = base
     env["HEAD_SHA"] = head
+    env["HEAD_REF"] = head_ref
     if allowed is None:
         env.pop("ALLOWED_EMAIL", None)
     else:
@@ -1160,3 +1168,119 @@ def test_roles_only_in_subject_fail_missing(tmp_path, step_run):
     assert_fail(proc, f"commit {short} needs a filled-in 'Doer:' line")
     assert f"commit {short} needs a filled-in 'Grader:' line" in proc.stdout
     assert "must be a trailer in the last paragraph of the commit message." in proc.stdout
+
+
+def test_legacy_through_later_commit_missing_doer_fails(tmp_path, step_run):
+    body = GOOD_BODY + "Legacy through: LEGACY_SHA\n"
+    proc, head = run_identity(
+        tmp_path,
+        step_run,
+        body,
+        [
+            {"message": "graded\n", "committer": OTHER, "legacy": True},
+            {"message": "later work\n"},
+        ],
+        head_ref="poc/demo",
+    )
+    assert_fail(proc, f"commit {head[:7]} needs a filled-in 'Doer:' line")
+
+
+def test_legacy_through_later_commit_bad_author_email_fails(tmp_path, step_run):
+    body = GOOD_BODY + "Legacy through: LEGACY_SHA\n"
+    proc, head = run_identity(
+        tmp_path,
+        step_run,
+        body,
+        [
+            {"message": "graded\n", "committer": OTHER, "legacy": True},
+            {"message": GOOD_MSG, "author": OTHER},
+        ],
+        head_ref="poc/demo",
+    )
+    assert_fail(proc, f"{head[:7]}: author email {OTHER!r} is not the allowed email {ALLOWED!r}")
+
+
+def test_legacy_through_non_poc_head_skips_nothing(tmp_path, step_run):
+    body = GOOD_BODY + "Legacy through: LEGACY_SHA\n"
+    proc, head = run_identity(
+        tmp_path,
+        step_run,
+        body,
+        [{"message": "graded\n", "committer": OTHER, "legacy": True}],
+        head_ref="feature/x",
+    )
+    assert_fail(
+        proc,
+        "'Legacy through:' is only allowed on a PR whose head branch matches poc/* "
+        "(this head is 'feature/x'). "
+        "Fix: delete the 'Legacy through:' line, or open the PR from a poc/* branch.",
+    )
+    assert f"{head[:7]}: committer email {OTHER!r} is not the allowed email {ALLOWED!r}" in proc.stdout
+
+
+def test_legacy_through_sha_not_ancestor_fails(tmp_path, step_run):
+    missing = "0123456789abcdef0123456789abcdef01234567"
+    body = GOOD_BODY + f"Legacy through: {missing}\n"
+    proc, _head = run_identity(
+        tmp_path,
+        step_run,
+        body,
+        [{"message": GOOD_MSG}],
+        head_ref="poc/demo",
+    )
+    assert_fail(proc, "Fix: name a commit already on this branch.")
+    assert missing in proc.stdout
+
+
+def test_two_legacy_through_lines_fail(tmp_path, step_run):
+    body = (
+        GOOD_BODY
+        + "Legacy through: 0123456789abcdef0123456789abcdef01234567\n"
+        + "legacy through: abcdefabcdefabcdefabcdefabcdefabcdefabcd\n"
+    )
+    proc, _head = run_identity(
+        tmp_path,
+        step_run,
+        body,
+        [{"message": GOOD_MSG}],
+        head_ref="poc/demo",
+    )
+    assert_fail(
+        proc,
+        "PR body has 2 'Legacy through:' lines. "
+        "Fix: leave exactly one line 'Legacy through: <40-hex sha>'.",
+    )
+
+
+def test_legacy_through_skips_graded_history(tmp_path, step_run):
+    body = GOOD_BODY + "Legacy through: LEGACY_SHA\n"
+    proc, _head = run_identity(
+        tmp_path,
+        step_run,
+        body,
+        [
+            {"message": "old web merge\n", "committer": OTHER},
+            {"message": "Doer: Rei\n", "committer": OTHER, "legacy": True},
+            {"message": GOOD_MSG},
+        ],
+        head_ref="poc/demo",
+    )
+    assert_pass(proc)
+    assert (
+        "skipped the per-commit identity and email checks on 2 commits "
+        "already graded on this POC branch; every later commit is still checked."
+    ) in proc.stdout
+    assert "::notice::Legacy through " in proc.stdout
+
+
+def test_legacy_through_malformed_value_fails(tmp_path, step_run):
+    body = GOOD_BODY + "Legacy through: not-a-sha\n"
+    proc, _head = run_identity(
+        tmp_path,
+        step_run,
+        body,
+        [{"message": GOOD_MSG}],
+        head_ref="poc/demo",
+    )
+    assert_fail(proc, "Fix: set the line to 'Legacy through: <40-hex sha>'.")
+    assert "not-a-sha" in proc.stdout

@@ -63,6 +63,7 @@ jobs:
           PR_BODY: ${{ github.event.pull_request.body }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
           ALLOWED_EMAIL: ${{ inputs.allowed-email || vars.CI_ALLOWED_EMAIL }}
           EVENT_NAME: ${{ github.event_name }}
         run: |
@@ -330,6 +331,35 @@ jobs:
               )
           tier = caller_tier()
           check_roles(body, "PR body")
+          head_ref = (os.environ.get("HEAD_REF") or "").strip()
+          legacy_vals = re.findall(
+              r"^[ \t]*Legacy through[ \t]*:[ \t]*(.*?)[ \t]*$",
+              body,
+              re.I | re.M,
+          )
+          legacy_skip = set()
+          legacy_sha7 = ""
+          raw_legacy = ""
+          if len(legacy_vals) > 1:
+              errs.append(
+                  f"PR body has {len(legacy_vals)} 'Legacy through:' lines. "
+                  "Fix: leave exactly one line 'Legacy through: <40-hex sha>'."
+              )
+          elif len(legacy_vals) == 1:
+              raw_legacy = legacy_vals[0].strip()
+              if not re.fullmatch(r"[0-9a-fA-F]{40}", raw_legacy):
+                  errs.append(
+                      f"'Legacy through:' value {raw_legacy!r} is not exactly 40 hex characters. "
+                      "Fix: set the line to 'Legacy through: <40-hex sha>'."
+                  )
+                  raw_legacy = ""
+              elif not (head_ref.startswith("poc/") and len(head_ref) > len("poc/")):
+                  errs.append(
+                      "'Legacy through:' is only allowed on a PR whose head branch matches poc/* "
+                      f"(this head is '{head_ref}'). "
+                      "Fix: delete the 'Legacy through:' line, or open the PR from a poc/* branch."
+                  )
+                  raw_legacy = ""
           if not base or not head:
               errs.append(
                   "BASE_SHA and HEAD_SHA are required. "
@@ -351,6 +381,27 @@ jobs:
                           text=True,
                           env=fetch_env,
                       )
+              if raw_legacy:
+                  anc, _anc_err = git_out(["merge-base", "--is-ancestor", raw_legacy, head])
+                  if anc is None:
+                      errs.append(
+                          f"'Legacy through:' sha {raw_legacy} is not an ancestor of the head. "
+                          "Fix: name a commit already on this branch."
+                      )
+                  else:
+                      listed_legacy, lgerr = git_out(["rev-list", f"{base}..{raw_legacy}"])
+                      if listed_legacy is None:
+                          errs.append(
+                              f"git rev-list {base}..{raw_legacy} failed: {lgerr}. "
+                              "Fix: name a commit already on this branch."
+                          )
+                      else:
+                          legacy_skip = {
+                              line.strip()
+                              for line in listed_legacy.splitlines()
+                              if line.strip()
+                          }
+                          legacy_sha7 = raw_legacy[:7]
               listed, gerr = git_out(["rev-list", "--reverse", f"{base}..{head}"])
               if listed is None:
                   errs.append(
@@ -363,7 +414,11 @@ jobs:
                       errs.append(
                           "PR range contains zero commits. Fix: push at least one commit to this branch."
                       )
+                  skipped_n = 0
                   for sha in shas:
+                      if sha in legacy_skip:
+                          skipped_n += 1
+                          continue
                       short = sha[:7]
                       raw, gerr = git_out(["log", "-1", "--format=%ae%x00%ce%x00%B", sha])
                       if raw is None:
@@ -429,6 +484,12 @@ jobs:
                                   for i in range(before, len(errs)):
                                       if errs[i].startswith(f"commit {short} "):
                                           errs[i] = errs[i] + hint
+                  if legacy_sha7:
+                      print(
+                          f"::notice::Legacy through {legacy_sha7}: skipped the per-commit identity "
+                          f"and email checks on {skipped_n} commits already graded on this POC branch; "
+                          f"every later commit is still checked."
+                      )
           for e in errs:
               print(f"::error::{e}")
           if errs:
