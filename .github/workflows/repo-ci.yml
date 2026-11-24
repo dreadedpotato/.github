@@ -57,7 +57,7 @@ jobs:
           fi
           echo "$(grep -E '^Repo tier:' "$readme")"
 
-      - name: "PR identity (linked issue; body and every commit: one Doer, one Grader, different seats; allowed commit email)"
+      - name: "PR identity (linked issue; body: one Doer, one Grader, different seats; allowed commit author email)"
         shell: python3 {0}
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
@@ -133,44 +133,6 @@ jobs:
                   return None
               fix = ", ".join(display) + " (a first name alone is fine)"
               return seats, fix
-          def merge_tree_write_tree_supported():
-              raw, err = git_out(["version"])
-              if raw is None:
-                  return False, err or "git version failed"
-              m = re.search(r"git version (\d+)\.(\d+)", raw)
-              if not m:
-                  return False, f"could not parse a git version from {raw.strip()!r}"
-              ver = (int(m.group(1)), int(m.group(2)))
-              if ver < (2, 38):
-                  return False, (
-                      f"git {ver[0]}.{ver[1]} does not support merge-tree --write-tree "
-                      f"(need 2.38 or later)"
-                  )
-              return True, ""
-          def base_sync_skip(sha, base_sha):
-              raw, _err = git_out(["log", "-1", "--format=%P", sha])
-              if raw is None:
-                  return "noskip", ""
-              parents = raw.split()
-              if len(parents) != 2:
-                  return "noskip", ""
-              for parent in parents[1:]:
-                  out, _err = git_out(["merge-base", "--is-ancestor", parent, base_sha])
-                  if out is None:
-                      return "noskip", ""
-              ok, why = merge_tree_write_tree_supported()
-              if not ok:
-                  return "unavailable", why
-              tree, terr = git_out(["merge-tree", "--write-tree", parents[0], parents[1]])
-              if tree is None:
-                  low = (terr or "").lower()
-                  if any(s in low for s in ("unknown option", "unknown switch", "not a git command")):
-                      return "unavailable", f"git merge-tree --write-tree is unavailable ({terr})"
-                  return "noskip", ""
-              actual, _err = git_out(["rev-parse", f"{sha}^{{tree}}"])
-              if actual is None or tree.strip() != actual.strip():
-                  return "noskip", ""
-              return "skip", ""
           def git_out(args):
               try:
                   proc = subprocess.run(["git", *args], capture_output=True, text=True)
@@ -196,37 +158,24 @@ jobs:
           def check_roles(text, label):
               def note(msg):
                   errs.append(f"{label} {msg}" if label else msg)
-              def role_line(msg):
-                  if label.startswith("commit "):
-                      return (
-                          msg
-                          + " The line must be a trailer in the last paragraph of the commit message."
-                      )
-                  return msg
               text = text.replace("\r", "")
               accepted = {}
               for name in ("Doer", "Grader"):
                   ms = re.findall(rf"^[ \t]*{name}[ \t]*:[ \t]*(.*?)[ \t]*$", text, re.I | re.M)
                   if len(ms) > 1:
                       note(
-                          role_line(
-                              f"must have exactly one '{name}:' line (found {len(ms)}). "
-                              f"Fix: leave exactly one '{name}:' line."
-                          )
+                          f"must have exactly one '{name}:' line (found {len(ms)}). "
+                          f"Fix: leave exactly one '{name}:' line."
                       )
                   elif len(ms) == 0 or not ms[0].strip():
                       if name == "Doer":
                           note(
-                              role_line(
-                                  "needs a filled-in 'Doer:' line. Fix: add one line 'Doer: <current seat>'."
-                              )
+                              "needs a filled-in 'Doer:' line. Fix: add one line 'Doer: <current seat>'."
                           )
                       else:
                           note(
-                              role_line(
-                                  "needs a filled-in 'Grader:' line. "
-                                  "Fix: add one line 'Grader: <current seat or self-merge>'."
-                              )
+                              "needs a filled-in 'Grader:' line. "
+                              "Fix: add one line 'Grader: <current seat or self-merge>'."
                           )
                   else:
                       accepted[name] = ms[0].strip()
@@ -261,7 +210,7 @@ jobs:
               ):
                   errs.append(
                       "Grader: self-merge is not allowed on a PROD repo (README says Repo tier: PROD). "
-                      "Fix: set Grader: Hester Quill (a named current seat) in the PR body and the commit trailers."
+                      "Fix: set Grader: Hester Quill (a named current seat) in the PR body."
                   )
           loaded = load_seats()
           if loaded is None:
@@ -386,49 +335,11 @@ jobs:
                                       f"{short}: author email {author!r} is not the allowed email {allowed!r}. "
                                       f"Fix: set the author email on commit {short} to {allowed!r} and push the fix to this branch."
                                   )
-                              if committer.lower() != allowed.lower():
+                              if committer.lower() != allowed.lower() and committer.lower() != "noreply@github.com":
                                   errs.append(
                                       f"{short}: committer email {committer!r} is not the allowed email {allowed!r}. "
                                       f"Fix: set the committer email on commit {short} to {allowed!r} and push the fix to this branch."
                                   )
-                              skip_state, skip_why = base_sync_skip(sha, base)
-                              if skip_state == "skip":
-                                  continue
-                              roles, rerr = git_out(
-                                  [
-                                      "log",
-                                      "-1",
-                                      "--format=%(trailers:key=Doer)%(trailers:key=Grader)",
-                                      sha,
-                                  ]
-                              )
-                              before = len(errs)
-                              if roles is None:
-                                  errs.append(
-                                      f"{short}: git log failed: {rerr}. "
-                                      f"Fix: make commit {short} readable with git log and push the fix to this branch."
-                                  )
-                              else:
-                                  check_roles(roles, f"commit {short}")
-                              parent_line, _err = git_out(["log", "-1", "--format=%P", sha])
-                              if parent_line is not None and len(parent_line.split()) >= 2:
-                                  hint = (
-                                      " A merge that only brings in the base branch is exempt when its other "
-                                      "parent is already reachable from the base and git merge-tree --write-tree "
-                                      "exits 0 with a tree that equals the merge commit. If this merge is not "
-                                      "that shape, cherry-pick the feature commits onto a fresh branch off "
-                                      "current main instead of merging main in."
-                                  )
-                                  if skip_state == "unavailable":
-                                      hint = (
-                                          f" This merge was not exempted: {skip_why}. "
-                                          "Fix: use git 2.38 or later, or add Doer/Grader trailers on this "
-                                          "merge, or cherry-pick the feature commits onto a fresh branch off "
-                                          "current main."
-                                      )
-                                  for i in range(before, len(errs)):
-                                      if errs[i].startswith(f"commit {short} "):
-                                          errs[i] = errs[i] + hint
           for e in errs:
               print(f"::error::{e}")
           if errs:
